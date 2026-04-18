@@ -524,10 +524,10 @@ func (a *app) parsePeerFlags(mode config.PeerMode, args []string) (config.PeerOp
 
 	switch mode {
 	case config.ModeExpose:
-		fs.StringVar(&options.Target, "target", "", "local TCP target to expose, e.g. 127.0.0.1:22")
+		fs.StringVar(&options.Target, "target", "", "local TCP target to expose, e.g. 127.0.0.1:22 (required)")
 		fs.StringVar(&options.Target, "T", "", "alias for --target")
 	case config.ModeConnect:
-		fs.StringVar(&options.Listen, "listen", defaultListen, "local TCP listen address, e.g. 127.0.0.1:2222")
+		fs.StringVar(&options.Listen, "listen", defaultListen, "local TCP address where the remote target surfaces, e.g. 127.0.0.1:2222")
 		fs.StringVar(&options.Listen, "l", defaultListen, "alias for --listen")
 	}
 
@@ -549,6 +549,17 @@ func (a *app) parsePeerFlags(mode config.PeerMode, args []string) (config.PeerOp
 
 	if versionOnly {
 		return options, true, nil
+	}
+
+	// Mode-specific required fields. Fail here, before the banner and
+	// the credential auto-gen block run, so the user sees one clean
+	// error line instead of a freshly-minted token followed by a
+	// "target is required" message.
+	switch mode {
+	case config.ModeExpose:
+		if strings.TrimSpace(options.Target) == "" {
+			return config.PeerOptions{}, false, errors.New("expose mode requires --target HOST:PORT (the local TCP endpoint to tunnel)")
+		}
 	}
 
 	// Connection string overrides only those fields the user has not
@@ -639,7 +650,8 @@ func (a *app) printExposeHandoff(options config.PeerOptions) {
 		p.Green(formatted),
 	)
 	fmt.Fprintln(a.stderr)
-	fmt.Fprintln(a.stderr, p.Muted("Keep this terminal open; closing it ends the tunnel."))
+	fmt.Fprintln(a.stderr, p.Muted("The tunnel will surface on the connect side at 127.0.0.1:2222 by default."))
+	fmt.Fprintln(a.stderr, p.Muted("Override with --listen HOST:PORT. Keep this terminal open; closing it ends the tunnel."))
 	fmt.Fprintln(a.stderr)
 }
 
@@ -736,12 +748,12 @@ func (a *app) printRootUsage() {
 	w := a.stderr
 	p := a.palette
 	fmt.Fprintln(w, p.Bold("Usage:"))
-	fmt.Fprintln(w, "  "+p.Cyan(toolName+" expose")+"  "+p.Muted("[--target HOST:PORT] [flags]"))
-	fmt.Fprintln(w, "  "+p.Cyan(toolName+" connect")+" "+p.Muted("[rtc2tcp://TOKEN:SECRET@HOST[:PORT]] [flags]"))
+	fmt.Fprintln(w, "  "+p.Cyan(toolName+" expose")+"  "+p.Bold("--target HOST:PORT")+" "+p.Muted("[flags]"))
+	fmt.Fprintln(w, "  "+p.Cyan(toolName+" connect")+" "+p.Muted("[rtc2tcp://TOKEN:SECRET@HOST[:PORT]] [--listen HOST:PORT] [flags]"))
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, p.Bold("Subcommands:"))
-	fmt.Fprintln(w, "  "+p.Cyan("expose")+"    Expose a local TCP endpoint to a remote peer.")
-	fmt.Fprintln(w, "  "+p.Cyan("connect")+"   Forward a local TCP listener to a remote exposed service.")
+	fmt.Fprintln(w, "  "+p.Cyan("expose")+"    Expose a local TCP endpoint to a remote peer. "+p.Muted("--target is required."))
+	fmt.Fprintln(w, "  "+p.Cyan("connect")+"   Forward a local TCP address to a remote exposed service.")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, p.Bold("Global flags:"))
 	fmt.Fprintln(w, "  -q, --quiet, --silent    Suppress banner and informational output.")
@@ -756,13 +768,15 @@ func (a *app) printRootUsage() {
 	fmt.Fprintln(w, "  NO_COLOR / FORCE_COLOR            Override colour detection.")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, p.Bold("Examples:"))
-	fmt.Fprintln(w, "  "+p.Muted("# Expose local SSH with auto-generated credentials:"))
+	fmt.Fprintln(w, "  "+p.Muted("# expose side: share local SSH (credentials auto-generated):"))
 	fmt.Fprintln(w, "  "+toolName+" expose --target 127.0.0.1:22")
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "  "+p.Muted("# Connect using the connection string printed by the expose side:"))
-	fmt.Fprintln(w, "  "+toolName+" connect rtc2tcp://TOKEN:SECRET@127.0.0.1:8080/")
+	fmt.Fprintln(w, "  "+p.Muted("# connect side: surface the remote target on localhost:2223:"))
+	fmt.Fprintln(w, "  "+toolName+" connect rtc2tcp://TOKEN:SECRET@broker.example.com:8080 --listen 127.0.0.1:2223")
+	fmt.Fprintln(w, "  "+p.Muted("# then use the local port:"))
+	fmt.Fprintln(w, "  ssh -p 2223 user@localhost")
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "  "+p.Muted("# Explicit values from environment:"))
+	fmt.Fprintln(w, "  "+p.Muted("# Pinned credentials from environment:"))
 	fmt.Fprintln(w, "  "+config.EnvRendezvousToken+"=lab-demo \\")
 	fmt.Fprintln(w, "  "+config.EnvPairingSecretFile+"=./pairing-secret.txt \\")
 	fmt.Fprintln(w, "  "+toolName+" connect --listen 127.0.0.1:2222")
@@ -774,16 +788,16 @@ func (a *app) printSubcommandUsage(mode config.PeerMode) {
 	p := a.palette
 	switch mode {
 	case config.ModeExpose:
-		fmt.Fprintln(w, p.Bold("Usage: ")+p.Cyan(toolName+" expose")+p.Muted(" [flags]"))
+		fmt.Fprintln(w, p.Bold("Usage: ")+p.Cyan(toolName+" expose")+" "+p.Bold("--target HOST:PORT")+p.Muted(" [flags]"))
 		fmt.Fprintln(w)
 		fmt.Fprintln(w, p.Bold("Expose flags:"))
-		fmt.Fprintln(w, "  -T, --target       HOST:PORT      Local TCP endpoint to expose. (required)")
+		fmt.Fprintln(w, "  -T, --target       HOST:PORT      Local TCP endpoint to expose. "+p.Bold("(required)"))
 		fmt.Fprintln(w)
 	case config.ModeConnect:
-		fmt.Fprintln(w, p.Bold("Usage: ")+p.Cyan(toolName+" connect")+p.Muted(" [rtc2tcp://TOKEN:SECRET@HOST[:PORT]] [flags]"))
+		fmt.Fprintln(w, p.Bold("Usage: ")+p.Cyan(toolName+" connect")+p.Muted(" [rtc2tcp://TOKEN:SECRET@HOST[:PORT]] [--listen HOST:PORT] [flags]"))
 		fmt.Fprintln(w)
 		fmt.Fprintln(w, p.Bold("Connect flags:"))
-		fmt.Fprintln(w, "  -l, --listen       HOST:PORT      Local TCP listen address. (default 127.0.0.1:2222)")
+		fmt.Fprintln(w, "  -l, --listen       HOST:PORT      Local TCP address where the remote target surfaces. (default 127.0.0.1:2222)")
 		fmt.Fprintln(w, "      --connection   URL            rtc2tcp://… connection string (same as positional arg).")
 		fmt.Fprintln(w)
 	}

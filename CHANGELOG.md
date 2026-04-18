@@ -10,6 +10,9 @@ All notable protocol, security, and public-interface changes to rtc2tcp are reco
 - Short aliases for every major flag: `-t`/`--rendezvous-token`, `-s`/`--pairing-secret`, `-b`/`--broker`, `-T`/`--target`, `-l`/`--listen`, `-q`/`--quiet`, `-V`/`--version`.
 - Pretty, coloured help menu on both binaries.
 
+### Changed (UX)
+- `rtc2tcp-peer expose` now validates `--target` before the banner and credential auto-generation run, so a missing target produces one clean error instead of a generated-credentials block followed by a late failure.
+
 ### Added (release)
 - Release workflow now produces per-platform archives (`.tar.gz` on Unix, `.zip` on Windows) that bundle the two binaries alongside `README.md`, `SECURITY.md`, `PROTOCOL.md`, and `CHANGELOG.md`. Each archive ships with its own `.sha256` file in addition to the aggregate `SHA256SUMS` that cosign signs.
 

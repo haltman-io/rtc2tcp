@@ -9,6 +9,24 @@
                                |_|
 ```
 
+[![Release](https://img.shields.io/github/v/release/haltman-io/rtc2tcp?include_prereleases&sort=semver&color=blue)](https://github.com/haltman-io/rtc2tcp/releases)
+[![License](https://img.shields.io/github/license/haltman-io/rtc2tcp?color=green)](LICENSE)
+[![Go Reference](https://pkg.go.dev/badge/github.com/haltman-io/rtc2tcp.svg)](https://pkg.go.dev/github.com/haltman-io/rtc2tcp)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/haltman-io/rtc2tcp?logo=go&label=go)](go.mod)
+[![Go Report Card](https://goreportcard.com/badge/github.com/haltman-io/rtc2tcp)](https://goreportcard.com/report/github.com/haltman-io/rtc2tcp)
+
+[![CI](https://img.shields.io/github/actions/workflow/status/haltman-io/rtc2tcp/ci.yml?branch=main&label=CI&logo=github)](https://github.com/haltman-io/rtc2tcp/actions/workflows/ci.yml)
+[![Release Workflow](https://img.shields.io/github/actions/workflow/status/haltman-io/rtc2tcp/release.yml?label=release&logo=github)](https://github.com/haltman-io/rtc2tcp/actions/workflows/release.yml)
+[![Last Commit](https://img.shields.io/github/last-commit/haltman-io/rtc2tcp?logo=github)](https://github.com/haltman-io/rtc2tcp/commits/main)
+[![Issues](https://img.shields.io/github/issues/haltman-io/rtc2tcp?logo=github)](https://github.com/haltman-io/rtc2tcp/issues)
+[![Platform](https://img.shields.io/badge/platform-linux%20%7C%20macOS%20%7C%20windows-lightgrey)](#install)
+
+[![Auth: CPACE-Ristretto255](https://img.shields.io/badge/auth-CPACE--Ristretto255-success?logo=letsencrypt&logoColor=white)](PROTOCOL.md)
+[![Broker: blind](https://img.shields.io/badge/broker-blind-informational)](SECURITY-NOTES.md)
+[![Signed releases: cosign](https://img.shields.io/badge/releases-signed%20(cosign)-success?logo=sigstore&logoColor=white)](SECURITY.md)
+[![Downloads](https://img.shields.io/github/downloads/haltman-io/rtc2tcp/total?color=brightgreen&logo=github)](https://github.com/haltman-io/rtc2tcp/releases)
+[![Stars](https://img.shields.io/github/stars/haltman-io/rtc2tcp?logo=github&color=yellow)](https://github.com/haltman-io/rtc2tcp/stargazers)
+
 `rtc2tcp` tunnels one TCP endpoint over an end-to-end encrypted WebRTC DataChannel. A broker is used for rendezvous and signaling only; it is not in the payload path.
 
 Developed by [haltman.io](https://haltman.io/) · source at [github.com/haltman-io/rtc2tcp](https://github.com/haltman-io/rtc2tcp).
@@ -17,7 +35,9 @@ Milestone 1 protocol hardening and Milestone 2 peer authentication are implement
 
 ## Quick Start
 
-One-liner: auto-generate secrets, expose local SSH, copy the printed command, paste on the other machine.
+Two peers, three commands.
+
+**Expose side** (the machine hosting the TCP service) — share local SSH. `--target` is required; everything else is auto-generated and printed back to you:
 
 ```
 $ rtc2tcp-peer expose --target 127.0.0.1:22
@@ -31,14 +51,15 @@ Session credentials
 Run this on the connecting machine:
   rtc2tcp-peer connect rtc2tcp://jloh_XmGgi1HgUC3LWY7HA:N5mtwubpUlru9fyuOkf1Iw@127.0.0.1:8080
 
-Keep this terminal open; closing it ends the tunnel.
+The tunnel will surface on the connect side at 127.0.0.1:2222 by default.
+Override with --listen HOST:PORT. Keep this terminal open; closing it ends the tunnel.
 ```
 
-On the other machine:
+**Connect side** (the machine that will reach the remote target through a local port) — paste the printed command and pick the local port:
 
 ```
-$ rtc2tcp-peer connect rtc2tcp://jloh_XmGgi1HgUC3LWY7HA:N5mtwubpUlru9fyuOkf1Iw@127.0.0.1:8080
-$ ssh -p 2222 user@localhost
+$ rtc2tcp-peer connect rtc2tcp://jloh_XmGgi1HgUC3LWY7HA:N5mtwubpUlru9fyuOkf1Iw@broker.example.com:8080 --listen 127.0.0.1:2223
+$ ssh -p 2223 root@localhost
 ```
 
 That is the whole thing. The broker must be reachable by both peers; run one yourself with `rtc2tcp-broker --listen :8080`, or point `--broker` at a shared instance.
@@ -149,17 +170,17 @@ Start the broker in one terminal:
 go run ./cmd/rtc2tcp-broker --listen :8080
 ```
 
-In a second terminal, expose a target. Credentials are auto-generated unless you pass them explicitly:
+In a second terminal, expose a target (`--target` is required):
 
 ```bash
 go run ./cmd/rtc2tcp-peer expose --target 127.0.0.1:22
 ```
 
-The expose side prints a `rtc2tcp-peer connect rtc2tcp://…` command. Paste it on the third terminal (or a different machine reachable by the same broker):
+The expose side prints a `rtc2tcp-peer connect rtc2tcp://…` command. Paste it on the third terminal (or a different machine reachable by the same broker), and pick the local port where the tunnel should surface:
 
 ```bash
-go run ./cmd/rtc2tcp-peer connect rtc2tcp://<token>:<secret>@127.0.0.1:8080
-ssh -p 2222 user@localhost
+go run ./cmd/rtc2tcp-peer connect rtc2tcp://<token>:<secret>@127.0.0.1:8080 --listen 127.0.0.1:2223
+ssh -p 2223 root@localhost
 ```
 
 ## Pinning Credentials
