@@ -62,7 +62,7 @@ $ rtc2tcp-peer connect rtc2tcp://jloh_XmGgi1HgUC3LWY7HA:N5mtwubpUlru9fyuOkf1Iw@b
 $ ssh -p 2223 root@localhost
 ```
 
-That is the whole thing. The broker must be reachable by both peers; run one yourself with `rtc2tcp-broker --listen :8080`, or point `--broker` at a shared instance.
+That is the whole thing. The broker must be reachable by both peers; run one yourself with `rtc2tcp-broker --listen :8080`, or point `--broker` at a shared instance. For production hosting see [Hosting a broker](#hosting-a-broker).
 
 ## Binaries
 
@@ -125,7 +125,7 @@ See [PROTOCOL.md](PROTOCOL.md), [THREAT-MODEL.md](THREAT-MODEL.md), [SECURITY.md
 ## Known Limitations
 
 - The CPACE-Ristretto255 primitive is sourced from `github.com/cloudflare/circl`; its own test vectors are relied upon. The rtc2tcp integration (transcript construction, key schedule, session-binding material, state machine) has unit and pion-loopback end-to-end coverage but has not yet had an external security review.
-- Broker is in-memory only; no persistence, clustering, rate limiting, or abuse controls beyond message-size limits and origin restrictions.
+- Broker is in-memory only; no persistence or clustering. Per-source-IP rate limiting, origin restrictions, and message-size limits are in place; abuse controls beyond that are out of scope.
 - No TURN credential minting backend; TURN credentials are operator-supplied and static.
 - No certificate-pinning UI or out-of-band verifier UX.
 
@@ -182,6 +182,32 @@ The expose side prints a `rtc2tcp-peer connect rtc2tcp://…` command. Paste it 
 go run ./cmd/rtc2tcp-peer connect rtc2tcp://<token>:<secret>@127.0.0.1:8080 --listen 127.0.0.1:2223
 ssh -p 2223 root@localhost
 ```
+
+## Hosting a broker
+
+For production use the broker is designed to run behind a reverse proxy that handles TLS. Two pieces are provided:
+
+- **Reverse-proxy configuration** — worked examples for Caddy, nginx, and Cloudflare Tunnel, plus the `--trusted-proxies` / `--trusted-proxy-header` flags that make per-IP rate limiting see the real client instead of the proxy. See [`docs/reverse-proxy.md`](docs/reverse-proxy.md).
+- **systemd service** — a hardened unit file plus `install.sh` / `uninstall.sh` that provision a dedicated `rtc2tcp` user and an editable `/etc/rtc2tcp/broker.env`. See [`contrib/systemd/`](contrib/systemd/).
+
+One-shot install on a Linux host:
+
+```bash
+make all
+sudo ./contrib/systemd/install.sh
+sudo ${EDITOR:-nano} /etc/rtc2tcp/broker.env   # listen address, trusted proxies, rate limits
+sudo systemctl restart rtc2tcp-broker
+```
+
+Broker flags relevant to hosting:
+
+| Flag                        | Default             | Effect                                                                                                     |
+| --------------------------- | ------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `--listen`                  | `:8080`             | HTTP listen address. Behind a reverse proxy on the same host, prefer `127.0.0.1:8080`.                     |
+| `--trusted-proxies`         | *(empty)*           | Comma-separated IPs/CIDRs whose forwarded-for headers are honoured. Empty disables forwarded-for parsing.  |
+| `--trusted-proxy-header`    | `X-Forwarded-For`   | `X-Forwarded-For`, `X-Real-IP`, or `CF-Connecting-IP`.                                                     |
+| `--rate-limit-per-minute`   | `30`                | Per-client-IP WebSocket upgrade rate.                                                                      |
+| `--rate-limit-burst`        | `10`                | Per-client-IP burst.                                                                                        |
 
 ## Pinning Credentials
 

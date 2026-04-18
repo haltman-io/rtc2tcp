@@ -25,11 +25,15 @@ func main() {
 	fs.SetOutput(os.Stderr)
 
 	var (
-		listen      = fs.String("listen", ":8080", "HTTP listen address")
-		versionOnly = fs.Bool("version", false, "print version and exit")
-		quiet       = fs.Bool("quiet", false, "suppress banner")
-		silent      = fs.Bool("silent", false, "alias for --quiet")
-		noColor     = fs.Bool("no-color", false, "disable ANSI colours")
+		listen             = fs.String("listen", ":8080", "HTTP listen address")
+		trustedProxies     = fs.String("trusted-proxies", "", "comma-separated list of IPs or CIDRs whose X-Forwarded-For / proxy headers are honoured (e.g. \"127.0.0.1,10.0.0.0/8\"). Empty disables forwarded-for parsing.")
+		trustedProxyHeader = fs.String("trusted-proxy-header", "X-Forwarded-For", "HTTP header consulted for the real client IP when the request arrives from a trusted proxy. Typical values: X-Forwarded-For, X-Real-IP, CF-Connecting-IP.")
+		ratePerMinute      = fs.Int("rate-limit-per-minute", rendezvous.DefaultUpgradeRatePerMinute, "per-client-IP WebSocket upgrade rate (requests/minute)")
+		rateBurst          = fs.Int("rate-limit-burst", rendezvous.DefaultUpgradeBurst, "per-client-IP burst size for WebSocket upgrades")
+		versionOnly        = fs.Bool("version", false, "print version and exit")
+		quiet              = fs.Bool("quiet", false, "suppress banner")
+		silent             = fs.Bool("silent", false, "alias for --quiet")
+		noColor            = fs.Bool("no-color", false, "disable ANSI colours")
 	)
 	fs.BoolVar(versionOnly, "V", false, "alias for --version")
 	fs.BoolVar(quiet, "q", false, "alias for --quiet")
@@ -61,7 +65,21 @@ func main() {
 	})
 
 	logger := log.New(os.Stdout, "", log.LstdFlags|log.Lmicroseconds)
-	broker := rendezvous.NewBroker(logger)
+
+	opts := rendezvous.Options{
+		TrustedProxyHeader: *trustedProxyHeader,
+		RatePerMinute:      *ratePerMinute,
+		RateBurst:          *rateBurst,
+	}
+	if *trustedProxies != "" {
+		opts.TrustedProxies = []string{*trustedProxies}
+	}
+
+	broker, err := rendezvous.NewBrokerWithOptions(logger, opts)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "broker: invalid configuration:", err)
+		os.Exit(2)
+	}
 
 	server := &http.Server{
 		Addr:              *listen,
@@ -74,6 +92,10 @@ func main() {
 			"addr", *listen,
 			"version", build.Version,
 			"commit", build.Commit,
+			"trusted_proxies", *trustedProxies,
+			"trusted_proxy_header", *trustedProxyHeader,
+			"rate_per_minute", *ratePerMinute,
+			"rate_burst", *rateBurst,
 		))
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.Fatal(rendezvous.FormatEvent("listen_failed", "err", err.Error()))

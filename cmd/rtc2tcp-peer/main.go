@@ -475,7 +475,7 @@ func (a *app) sendSignal(ctx context.Context, client *signaling.Client, signal s
 func (a *app) parsePeerFlags(mode config.PeerMode, args []string) (config.PeerOptions, bool, error) {
 	defaultBroker := a.build.DefaultBrokerURL
 	if defaultBroker == "" {
-		defaultBroker = "http://127.0.0.1:8080"
+		defaultBroker = "https://rtc.haltman.io/"
 	}
 
 	fs := flag.NewFlagSet(mode.String(), flag.ContinueOnError)
@@ -805,7 +805,7 @@ func (a *app) printSubcommandUsage(mode config.PeerMode) {
 	fmt.Fprintln(w, "  -t, --rendezvous-token TOKEN      Broker-visible pairing token.")
 	fmt.Fprintln(w, "  -s, --pairing-secret   SECRET     Peer pairing secret (prefer --pairing-secret-file).")
 	fmt.Fprintln(w, "      --pairing-secret-file FILE    Read pairing secret from file.")
-	fmt.Fprintln(w, "  -b, --broker           URL        Broker URL (default http://127.0.0.1:8080).")
+	fmt.Fprintln(w, "  -b, --broker           URL        Broker URL (default https://rtc.haltman.io/).")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, p.Bold("Network:"))
 	fmt.Fprintln(w, "      --stun             URL        STUN server (empty to disable).")

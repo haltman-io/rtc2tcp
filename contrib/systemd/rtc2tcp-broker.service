@@ -1,0 +1,61 @@
+[Unit]
+Description=rtc2tcp broker (rendezvous + signaling)
+Documentation=https://github.com/haltman-io/rtc2tcp
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rtc2tcp
+Group=rtc2tcp
+
+# Tunables — edit the env file, not this unit.
+EnvironmentFile=/etc/rtc2tcp/broker.env
+
+ExecStart=/usr/local/bin/rtc2tcp-broker \
+    --listen ${RTC2TCP_BROKER_LISTEN} \
+    --trusted-proxies ${RTC2TCP_BROKER_TRUSTED_PROXIES} \
+    --trusted-proxy-header ${RTC2TCP_BROKER_TRUSTED_PROXY_HEADER} \
+    --rate-limit-per-minute ${RTC2TCP_BROKER_RATE_PER_MIN} \
+    --rate-limit-burst ${RTC2TCP_BROKER_RATE_BURST}
+
+# Broker is stateless; a fast restart on failure is safe.
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=10
+
+# Hardening. The broker only needs outbound network, read access to its
+# binary, and to write to stdout/stderr. Nothing else.
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectHome=yes
+ProtectSystem=strict
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+CapabilityBoundingSet=
+AmbientCapabilities=
+# Only needed if RTC2TCP_BROKER_LISTEN binds to a privileged port (<1024).
+# Uncomment and set AmbientCapabilities=CAP_NET_BIND_SERVICE in that case.
+#CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+#AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+# Logging goes to the journal.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=rtc2tcp-broker
+
+[Install]
+WantedBy=multi-user.target

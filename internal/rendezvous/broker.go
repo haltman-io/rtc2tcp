@@ -62,6 +62,9 @@ type Broker struct {
 	limiterIdleTTL  time.Duration
 	now             func() time.Time
 
+	trustedProxies      []trustedNet
+	trustedProxyHeader  string
+
 	ipLimiter *keyedLimiter
 
 	mu        sync.Mutex
@@ -93,9 +96,64 @@ type session struct {
 	createdAt     time.Time
 }
 
+// Options configures optional broker behaviour. The zero value falls
+// back to compiled-in defaults; NewBroker is the stable entry point
+// and remains valid without options.
+type Options struct {
+	// TrustedProxies is a list of IP addresses or CIDR blocks
+	// describing upstreams that are allowed to supply a forwarded
+	// client IP via TrustedProxyHeader. Leave empty to disable
+	// forwarded-for parsing entirely (the safe default for direct
+	// internet exposure).
+	TrustedProxies []string
+	// TrustedProxyHeader names the HTTP header consulted when the
+	// immediate peer is a trusted proxy. Supported values are
+	// "X-Forwarded-For" (multi-hop, list-aware), "X-Real-IP", or a
+	// vendor-specific variant such as "CF-Connecting-IP". Defaults to
+	// "X-Forwarded-For" when TrustedProxies is non-empty.
+	TrustedProxyHeader string
+	// RatePerMinute overrides the per-source-IP upgrade rate. Zero or
+	// negative values fall back to DefaultUpgradeRatePerMinute.
+	RatePerMinute int
+	// RateBurst overrides the per-source-IP burst size. Zero or
+	// negative values fall back to DefaultUpgradeBurst.
+	RateBurst int
+}
+
 func NewBroker(logger *log.Logger) *Broker {
+	b, err := NewBrokerWithOptions(logger, Options{})
+	if err != nil {
+		// Options{} is always valid; this path is unreachable.
+		panic(fmt.Sprintf("rendezvous: unexpected error from NewBrokerWithOptions: %v", err))
+	}
+	return b
+}
+
+// NewBrokerWithOptions is the configurable constructor. Use this when
+// the broker is running behind a reverse proxy (so forwarded-for
+// parsing can be enabled) or when rate-limit tuning is required.
+func NewBrokerWithOptions(logger *log.Logger, opts Options) (*Broker, error) {
 	if logger == nil {
 		logger = log.Default()
+	}
+
+	trusted, err := ParseTrustedProxies(strings.Join(opts.TrustedProxies, ","))
+	if err != nil {
+		return nil, err
+	}
+
+	header := strings.TrimSpace(opts.TrustedProxyHeader)
+	if header == "" && len(trusted) > 0 {
+		header = "X-Forwarded-For"
+	}
+
+	ratePerMinute := opts.RatePerMinute
+	if ratePerMinute <= 0 {
+		ratePerMinute = DefaultUpgradeRatePerMinute
+	}
+	burst := opts.RateBurst
+	if burst <= 0 {
+		burst = DefaultUpgradeBurst
 	}
 
 	b := &Broker{
@@ -103,14 +161,16 @@ func NewBroker(logger *log.Logger) *Broker {
 		upgrader: websocket.Upgrader{
 			CheckOrigin: brokerCheckOrigin,
 		},
-		waiterTTL:       DefaultWaiterTTL,
-		sessionTTL:      DefaultSessionTTL,
-		janitorInterval: DefaultJanitorInterval,
-		limiterIdleTTL:  DefaultLimiterIdleTTL,
-		now:             time.Now,
+		waiterTTL:          DefaultWaiterTTL,
+		sessionTTL:         DefaultSessionTTL,
+		janitorInterval:    DefaultJanitorInterval,
+		limiterIdleTTL:     DefaultLimiterIdleTTL,
+		now:                time.Now,
+		trustedProxies:     trusted,
+		trustedProxyHeader: header,
 		ipLimiter: newKeyedLimiter(
-			rate.Every(time.Minute/DefaultUpgradeRatePerMinute),
-			DefaultUpgradeBurst,
+			rate.Every(time.Minute/time.Duration(ratePerMinute)),
+			burst,
 		),
 		waiting:   make(map[string]*peer),
 		activeKey: make(map[string]string),
@@ -120,7 +180,7 @@ func NewBroker(logger *log.Logger) *Broker {
 
 	b.janitor.Add(1)
 	go b.runJanitor()
-	return b
+	return b, nil
 }
 
 // SetTimeouts overrides the default TTLs. Intended for tests; do not
@@ -151,7 +211,7 @@ func (b *Broker) Routes() http.Handler {
 }
 
 func (b *Broker) handleWebSocket(w http.ResponseWriter, r *http.Request) {
-	sourceIP := remoteIP(r)
+	sourceIP := clientIP(r, b.trustedProxies, b.trustedProxyHeader)
 	if !b.ipLimiter.Allow(sourceIP, b.now()) {
 		b.logger.Print(FormatEvent("rate_limited", "source_ip", sourceIP))
 		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
