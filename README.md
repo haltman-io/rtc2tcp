@@ -109,7 +109,7 @@ This tool exists for research, education, administration, and legitimate remote 
 - Unauthorised access to systems you don't own or have explicit written permission to reach
 - Harassment, doxxing, or "revenge" operations
 
-We do not host criminal operations. Valid abuse reports are reviewed. Confirmed abuse is terminated without notice and, where law enforcement is involved, cooperated with.
+We do not host criminal operations. Valid abuse reports are reviewed. Confirmed abuse is terminated without notice.
 
 Abuse reports: **root@haltman.io** (PGP key on [haltman.io](https://haltman.io/)).
 Security vulnerabilities: see [SECURITY.md](SECURITY.md).
