@@ -11,9 +11,9 @@ import (
 	"syscall"
 	"time"
 
-	"rtc2tcp/internal/banner"
-	"rtc2tcp/internal/config"
-	"rtc2tcp/internal/rendezvous"
+	"github.com/haltman-io/rtc2tcp/internal/banner"
+	"github.com/haltman-io/rtc2tcp/internal/config"
+	"github.com/haltman-io/rtc2tcp/internal/rendezvous"
 )
 
 const toolName = "rtc2tcp-broker"

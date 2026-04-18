@@ -18,15 +18,15 @@ import (
 
 	pion "github.com/pion/webrtc/v4"
 
-	"rtc2tcp/internal/auth"
-	"rtc2tcp/internal/banner"
-	"rtc2tcp/internal/color"
-	"rtc2tcp/internal/config"
-	"rtc2tcp/internal/logx"
-	"rtc2tcp/internal/rendezvous"
-	"rtc2tcp/internal/signaling"
-	"rtc2tcp/internal/tunnel"
-	rtcwebrtc "rtc2tcp/internal/webrtc"
+	"github.com/haltman-io/rtc2tcp/internal/auth"
+	"github.com/haltman-io/rtc2tcp/internal/banner"
+	"github.com/haltman-io/rtc2tcp/internal/color"
+	"github.com/haltman-io/rtc2tcp/internal/config"
+	"github.com/haltman-io/rtc2tcp/internal/logx"
+	"github.com/haltman-io/rtc2tcp/internal/rendezvous"
+	"github.com/haltman-io/rtc2tcp/internal/signaling"
+	"github.com/haltman-io/rtc2tcp/internal/tunnel"
+	rtcwebrtc "github.com/haltman-io/rtc2tcp/internal/webrtc"
 )
 
 const (

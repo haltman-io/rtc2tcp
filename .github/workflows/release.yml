@@ -171,7 +171,7 @@ jobs:
           set -euo pipefail
           VERSION_NO_V="${VERSION#v}"
           COMMIT="$(git rev-parse --short HEAD)"
-          LDFLAGS="-s -w -X rtc2tcp/internal/config.Version=${VERSION_NO_V} -X rtc2tcp/internal/config.Commit=${COMMIT}"
+          LDFLAGS="-s -w -X github.com/haltman-io/rtc2tcp/internal/config.Version=${VERSION_NO_V} -X github.com/haltman-io/rtc2tcp/internal/config.Commit=${COMMIT}"
 
           pkg="rtc2tcp-${VERSION}-${GOOS}-${GOARCH}"
           mkdir -p "build/${pkg}" dist

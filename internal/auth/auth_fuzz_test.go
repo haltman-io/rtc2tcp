@@ -6,7 +6,7 @@ import (
 	"errors"
 	"testing"
 
-	"rtc2tcp/internal/config"
+	"github.com/haltman-io/rtc2tcp/internal/config"
 )
 
 // FuzzStep exercises InteractiveAuthenticator.Step with arbitrary JSON

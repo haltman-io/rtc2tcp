@@ -8,8 +8,8 @@ import (
 	"io"
 	"strings"
 
-	"rtc2tcp/internal/color"
-	"rtc2tcp/internal/config"
+	"github.com/haltman-io/rtc2tcp/internal/color"
+	"github.com/haltman-io/rtc2tcp/internal/config"
 )
 
 const (

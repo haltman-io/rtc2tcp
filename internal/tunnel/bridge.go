@@ -8,7 +8,7 @@ import (
 
 	pion "github.com/pion/webrtc/v4"
 
-	"rtc2tcp/internal/logx"
+	"github.com/haltman-io/rtc2tcp/internal/logx"
 )
 
 const (

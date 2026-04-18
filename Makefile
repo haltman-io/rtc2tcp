@@ -12,8 +12,8 @@ COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 # paths from the embedded file references. Both are required for a
 # bit-identical build across build hosts.
 LDFLAGS := -s -w \
-	-X rtc2tcp/internal/config.Version=$(VERSION) \
-	-X rtc2tcp/internal/config.Commit=$(COMMIT)
+	-X github.com/haltman-io/rtc2tcp/internal/config.Version=$(VERSION) \
+	-X github.com/haltman-io/rtc2tcp/internal/config.Commit=$(COMMIT)
 
 GOFLAGS := -trimpath -ldflags "$(LDFLAGS)"
 

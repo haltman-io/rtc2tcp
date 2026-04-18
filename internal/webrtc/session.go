@@ -13,10 +13,10 @@ import (
 	psdp "github.com/pion/sdp/v3"
 	pion "github.com/pion/webrtc/v4"
 
-	"rtc2tcp/internal/auth"
-	"rtc2tcp/internal/config"
-	"rtc2tcp/internal/logx"
-	"rtc2tcp/internal/signaling"
+	"github.com/haltman-io/rtc2tcp/internal/auth"
+	"github.com/haltman-io/rtc2tcp/internal/config"
+	"github.com/haltman-io/rtc2tcp/internal/logx"
+	"github.com/haltman-io/rtc2tcp/internal/signaling"
 )
 
 const controlChannelLabel = "rtc2tcp-auth"

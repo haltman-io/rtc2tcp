@@ -1,6 +1,6 @@
 package rendezvous
 
-import "rtc2tcp/internal/logx"
+import "github.com/haltman-io/rtc2tcp/internal/logx"
 
 // FormatEvent emits the broker's structured log format. See
 // logx.Event for the exact shape. Exported so

@@ -18,7 +18,7 @@ import (
 	"golang.org/x/crypto/curve25519"
 	"golang.org/x/crypto/hkdf"
 
-	"rtc2tcp/internal/config"
+	"github.com/haltman-io/rtc2tcp/internal/config"
 )
 
 // Milestone 2 interactive peer-authentication subsystem.

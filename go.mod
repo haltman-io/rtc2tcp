@@ -1,4 +1,4 @@
-module rtc2tcp
+module github.com/haltman-io/rtc2tcp
 
 go 1.26.0
 

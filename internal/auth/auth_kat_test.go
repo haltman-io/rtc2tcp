@@ -20,7 +20,7 @@ import (
 
 	"golang.org/x/crypto/hkdf"
 
-	"rtc2tcp/internal/config"
+	"github.com/haltman-io/rtc2tcp/internal/config"
 )
 
 func mustHex(t *testing.T, s string) []byte {

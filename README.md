@@ -145,8 +145,8 @@ make all
 # equivalent to:
 # CGO_ENABLED=0 go build -trimpath \
 #   -ldflags "-s -w \
-#             -X rtc2tcp/internal/config.Version=$(git describe --tags --always --dirty) \
-#             -X rtc2tcp/internal/config.Commit=$(git rev-parse --short HEAD)" \
+#             -X github.com/haltman-io/rtc2tcp/internal/config.Version=$(git describe --tags --always --dirty) \
+#             -X github.com/haltman-io/rtc2tcp/internal/config.Commit=$(git rev-parse --short HEAD)" \
 #   -o bin/rtc2tcp-broker ./cmd/rtc2tcp-broker
 ```
 
@@ -154,9 +154,9 @@ Embed a default broker URL at build time:
 
 ```bash
 go build -trimpath \
-  -ldflags "-X rtc2tcp/internal/config.DefaultBrokerURL=https://broker.example.com \
-            -X rtc2tcp/internal/config.Version=0.1.0 \
-            -X rtc2tcp/internal/config.Commit=$(git rev-parse --short HEAD)" \
+  -ldflags "-X github.com/haltman-io/rtc2tcp/internal/config.DefaultBrokerURL=https://broker.example.com \
+            -X github.com/haltman-io/rtc2tcp/internal/config.Version=0.1.0 \
+            -X github.com/haltman-io/rtc2tcp/internal/config.Commit=$(git rev-parse --short HEAD)" \
   ./cmd/rtc2tcp-peer
 ```
 

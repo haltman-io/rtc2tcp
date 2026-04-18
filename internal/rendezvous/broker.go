@@ -17,8 +17,8 @@ import (
 	"github.com/gorilla/websocket"
 	"golang.org/x/time/rate"
 
-	"rtc2tcp/internal/config"
-	"rtc2tcp/internal/signaling"
+	"github.com/haltman-io/rtc2tcp/internal/config"
+	"github.com/haltman-io/rtc2tcp/internal/signaling"
 )
 
 const (

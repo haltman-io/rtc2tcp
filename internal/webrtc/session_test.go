@@ -7,8 +7,8 @@ import (
 	"log"
 	"testing"
 
-	"rtc2tcp/internal/auth"
-	"rtc2tcp/internal/config"
+	"github.com/haltman-io/rtc2tcp/internal/auth"
+	"github.com/haltman-io/rtc2tcp/internal/config"
 )
 
 func TestExtractTransportFingerprint(t *testing.T) {
