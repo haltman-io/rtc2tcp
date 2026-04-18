@@ -14,7 +14,8 @@ All notable protocol, security, and public-interface changes to rtc2tcp are reco
 - `rtc2tcp-peer expose` now validates `--target` before the banner and credential auto-generation run, so a missing target produces one clean error instead of a generated-credentials block followed by a late failure.
 
 ### Added (release)
-- Release workflow now produces per-platform archives (`.tar.gz` on Unix, `.zip` on Windows) that bundle the two binaries alongside `README.md`, `SECURITY.md`, `PROTOCOL.md`, and `CHANGELOG.md`. Each archive ships with its own `.sha256` file in addition to the aggregate `SHA256SUMS` that cosign signs.
+- Release workflow now produces per-platform archives (`.tar.gz` on Unix, `.zip` on Windows) that bundle the two binaries alongside `README.md`, `LICENSE`, `SECURITY.md`, `PROTOCOL.md`, and `CHANGELOG.md`. Each archive ships with its own `.sha256` file in addition to the aggregate `SHA256SUMS` that cosign signs.
+- Release workflow is fully automatic: every push to `main` parses commit subjects as [Conventional Commits](https://www.conventionalcommits.org/), computes the next [semantic version](https://semver.org) (`feat!:`/`BREAKING CHANGE:` → major, `feat:` → minor, `fix:`/`perf:`/`refactor:`/`revert:` → patch, everything else → skip), and cuts a signed GitHub Release with cross-platform binaries. Manual version pinning available via `workflow_dispatch` with a `version` input.
 
 ### Changed (security-critical)
 - Peer authentication is now a balanced CPACE-Ristretto255 PAKE, sourced from `github.com/cloudflare/circl/group`. The default scheme identifier is `rtc2tcp-auth/cpace-ristretto255-v2`. The previous transitional ECDH scheme (`rtc2tcp-auth/interactive-ecdh-v2a`) is retained compiled in for rollout compatibility and refused structurally by CPACE-configured peers via the wire-level scheme-pin check.

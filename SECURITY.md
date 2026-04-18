@@ -50,20 +50,23 @@ Good-faith security research on the in-scope components listed above is welcome.
 
 ## Release Integrity
 
-Release binaries built by `.github/workflows/release.yml` are:
+Releases are produced automatically on every push to `main`. The workflow in `.github/workflows/release.yml`:
 
-- Cross-compiled from a single, checked-out tag using `-trimpath` and build-stamped `Version` / `Commit` via `-ldflags`.
-- Accompanied by a `SHA256SUMS` manifest.
-- Signed keyless via Sigstore cosign using GitHub OIDC; the signature (`SHA256SUMS.sig`) and certificate (`SHA256SUMS.pem`) are attached to the release.
+- Parses Conventional-Commit subjects since the last `v*` tag to compute the next semantic version (`feat!:` / `BREAKING CHANGE:` → major, `feat:` → minor, `fix:` / `perf:` / `refactor:` / `revert:` → patch, everything else → no release).
+- Cross-compiles both binaries from the pushed `main` commit using `-trimpath` and build-stamped `Version` / `Commit` via `-ldflags`.
+- Packages each target triple as a `.tar.gz` (Unix) / `.zip` (Windows), bundling `README.md`, `LICENSE`, `SECURITY.md`, `PROTOCOL.md`, and `CHANGELOG.md` alongside the binaries.
+- Signs the aggregate `SHA256SUMS` keyless via Sigstore cosign using GitHub OIDC; the signature (`SHA256SUMS.sig`) and certificate (`SHA256SUMS.pem`) are attached to the release.
 
-To verify a downloaded artifact:
+The Fulcio certificate's OIDC subject is `https://github.com/<org>/rtc2tcp/.github/workflows/release.yml@refs/heads/main`, so verification pins the certificate identity to the release workflow running on `main`:
 
 ```
 cosign verify-blob \
   --certificate SHA256SUMS.pem \
   --signature   SHA256SUMS.sig \
-  --certificate-identity-regexp 'https://github.com/.+/rtc2tcp/.github/workflows/release.yml@refs/tags/.+' \
+  --certificate-identity-regexp 'https://github.com/.+/rtc2tcp/.github/workflows/release.yml@refs/heads/main' \
   --certificate-oidc-issuer     'https://token.actions.githubusercontent.com' \
   SHA256SUMS
 sha256sum -c SHA256SUMS --ignore-missing
 ```
+
+A manual release triggered via `workflow_dispatch` uses the same identity regex because workflow-dispatched runs on the default branch still carry `refs/heads/main` as the ref.

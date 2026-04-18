@@ -210,7 +210,9 @@ Short flags are available for every long option: `-t/--rendezvous-token`, `-s/--
 
 ### Pre-built binaries
 
-Grab a release from [github.com/haltman-io/rtc2tcp/releases](https://github.com/haltman-io/rtc2tcp/releases). Each tag publishes signed binaries for `linux/{amd64,arm64}`, `darwin/{amd64,arm64}`, and `windows/amd64`, packaged as `.tar.gz` / `.zip` with a `SHA256SUMS` manifest and a cosign signature. Verification recipe is in [SECURITY.md](SECURITY.md).
+Grab a release from [github.com/haltman-io/rtc2tcp/releases](https://github.com/haltman-io/rtc2tcp/releases). Each release publishes signed binaries for `linux/{amd64,arm64}`, `darwin/{amd64,arm64}`, and `windows/amd64`, packaged as `.tar.gz` / `.zip` with a `SHA256SUMS` manifest and a cosign signature. Verification recipe is in [SECURITY.md](SECURITY.md).
+
+Releases are produced automatically on every push to `main` (see [Releases](#releases) below).
 
 ### From source
 
@@ -218,6 +220,47 @@ Grab a release from [github.com/haltman-io/rtc2tcp/releases](https://github.com/
 go install github.com/haltman-io/rtc2tcp/cmd/rtc2tcp-peer@latest
 go install github.com/haltman-io/rtc2tcp/cmd/rtc2tcp-broker@latest
 ```
+
+## Releases
+
+The release pipeline is fully automatic. Every push to `main` runs [`.github/workflows/release.yml`](.github/workflows/release.yml), which:
+
+1. Parses commit subjects since the last `v*` tag as [Conventional Commits](https://www.conventionalcommits.org/).
+2. Computes the next [semantic version](https://semver.org):
+   - `feat!:` / `fix!:` / `BREAKING CHANGE:` → **major** bump.
+   - `feat:` → **minor** bump.
+   - `fix:` / `perf:` / `refactor:` / `revert:` → **patch** bump.
+   - Everything else (`chore:`, `docs:`, `ci:`, `test:`, `style:`, `build:`) → no release.
+3. Cross-compiles both binaries for the five supported targets with `-trimpath` and build-stamped `Version` / `Commit` via ldflags.
+4. Packages each target as a `.tar.gz` (Unix) or `.zip` (Windows), bundling `README.md`, `LICENSE`, `SECURITY.md`, `PROTOCOL.md`, and `CHANGELOG.md` alongside the binaries.
+5. Generates an aggregate `SHA256SUMS`, signs it keyless via Sigstore cosign with GitHub OIDC, and attaches `SHA256SUMS`, `SHA256SUMS.sig`, `SHA256SUMS.pem`, plus every archive and its `.sha256` file to an auto-created GitHub Release at `vX.Y.Z`.
+
+### Cutting a release
+
+Just push conventional commits:
+
+```bash
+git commit -m "feat: add --connection flag to rtc2tcp-peer connect"
+git push origin main
+```
+
+Within ~3 minutes the GitHub Release appears with signed artifacts.
+
+### Releasing a specific version manually
+
+In the GitHub UI under **Actions → release → Run workflow**, enter `vX.Y.Z` in the `version` field. The detector is skipped and that version is released verbatim.
+
+### Skipping a release
+
+Use non-bumping Conventional Commit types:
+
+```bash
+git commit -m "chore: bump internal fuzzer seed"
+git commit -m "docs: reword quick start"
+git commit -m "ci: move windows runner to 2025"
+```
+
+These push to `main` without creating a release.
 
 ## TURN
 

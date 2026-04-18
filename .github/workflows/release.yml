@@ -1,31 +1,154 @@
-name: Release
+name: release
+
+# Automatic semantic-versioned releases on every push to main.
+#
+# Commit subjects are parsed with a conventional-commits regex:
+#
+#   feat:        -> minor bump   (v0.X.0 -> v0.(X+1).0)
+#   fix/perf/
+#   refactor/
+#   revert:      -> patch bump   (v0.Y.X -> v0.Y.(X+1))
+#   *!: or
+#   BREAKING     -> major bump   (vX.0.0 -> v(X+1).0.0)
+#   anything
+#   else         -> skipped
+#
+# A push that contains no bumping commits does not create a release,
+# so docs/chore/test/ci/style changes do not churn versions.
+#
+# Manual override: trigger the workflow via "Run workflow" with an
+# explicit vX.Y.Z and it is released verbatim, skipping detection.
 
 on:
   push:
-    tags: ['v*']
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Explicit version to release (vX.Y.Z). Leave empty to auto-detect from commits."
+        required: false
+        type: string
 
 permissions:
-  contents: write    # create the GitHub Release and attach assets
-  id-token: write    # request OIDC token for cosign keyless signing
+  contents: write    # create tags and the GitHub Release
+  id-token: write    # request an OIDC token for cosign keyless signing
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
+  version:
+    name: compute next version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.compute.outputs.version }}
+      previous: ${{ steps.compute.outputs.previous }}
+      bump: ${{ steps.compute.outputs.bump }}
+      should_release: ${{ steps.compute.outputs.should_release }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - id: compute
+        name: Analyse commits
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          MANUAL="${{ inputs.version }}"
+          if [ -n "$MANUAL" ]; then
+            if [[ ! "$MANUAL" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::Manual version must match vX.Y.Z (got: $MANUAL)"
+              exit 1
+            fi
+            echo "Manual release requested: $MANUAL"
+            printf 'version=%s\n' "$MANUAL"   >> "$GITHUB_OUTPUT"
+            printf 'previous=\n'              >> "$GITHUB_OUTPUT"
+            printf 'bump=manual\n'            >> "$GITHUB_OUTPUT"
+            printf 'should_release=true\n'    >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          LAST="$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)"
+          if [ -z "$LAST" ]; then
+            RANGE="HEAD"
+            MAJ=0; MIN=0; PAT=0
+          else
+            RANGE="${LAST}..HEAD"
+            V="${LAST#v}"
+            IFS=. read -r MAJ MIN PAT <<< "$V"
+          fi
+
+          BUMP=none
+          # Store regexes in variables; bash [[ =~ ]] fails to parse
+          # parens inside inline patterns.
+          RE_BREAKING='^BREAKING[ -]CHANGE'
+          RE_BANG='^[a-zA-Z]+(\([^)]+\))?!:'
+          RE_FEAT='^feat(\([^)]+\))?:'
+          RE_PATCH='^(fix|perf|refactor|revert)(\([^)]+\))?:'
+
+          # --no-merges so GitHub merge commits do not drown the signal;
+          # squash-merge commits still appear because they are regular commits.
+          while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            if [[ "$line" =~ $RE_BREAKING ]]; then BUMP=major; break; fi
+            if [[ "$line" =~ $RE_BANG     ]]; then BUMP=major; break; fi
+            if [[ "$line" =~ $RE_FEAT     ]]; then [ "$BUMP" != major ] && BUMP=minor; continue; fi
+            if [[ "$line" =~ $RE_PATCH    ]]; then [ "$BUMP"  = none  ] && BUMP=patch; continue; fi
+          done < <(git log $RANGE --no-merges --format='%s%n%b')
+
+          case "$BUMP" in
+            major)
+              NEW="v$((MAJ+1)).0.0"
+              ;;
+            minor)
+              if [ -z "$LAST" ]; then
+                NEW="v0.1.0"
+              else
+                NEW="v${MAJ}.$((MIN+1)).0"
+              fi
+              ;;
+            patch)
+              if [ -z "$LAST" ]; then
+                NEW="v0.0.1"
+              else
+                NEW="v${MAJ}.${MIN}.$((PAT+1))"
+              fi
+              ;;
+            none)
+              echo "No release-triggering commits since ${LAST:-<repo start>}; skipping."
+              printf 'version=\n'            >> "$GITHUB_OUTPUT"
+              printf 'previous=%s\n' "$LAST" >> "$GITHUB_OUTPUT"
+              printf 'bump=none\n'           >> "$GITHUB_OUTPUT"
+              printf 'should_release=false\n'>> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+          esac
+
+          echo "Bump: $BUMP · Previous: ${LAST:-none} · Next: $NEW"
+          printf 'version=%s\n'  "$NEW"   >> "$GITHUB_OUTPUT"
+          printf 'previous=%s\n' "$LAST"  >> "$GITHUB_OUTPUT"
+          printf 'bump=%s\n'     "$BUMP"  >> "$GITHUB_OUTPUT"
+          printf 'should_release=true\n'  >> "$GITHUB_OUTPUT"
+
   build:
     name: build (${{ matrix.goos }}/${{ matrix.goarch }})
+    needs: version
+    if: needs.version.outputs.should_release == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         include:
-          - goos: linux
-            goarch: amd64
-          - goos: linux
-            goarch: arm64
-          - goos: darwin
-            goarch: amd64
-          - goos: darwin
-            goarch: arm64
-          - goos: windows
-            goarch: amd64
+          - {goos: linux,   goarch: amd64}
+          - {goos: linux,   goarch: arm64}
+          - {goos: darwin,  goarch: amd64}
+          - {goos: darwin,  goarch: arm64}
+          - {goos: windows, goarch: amd64}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -39,15 +162,16 @@ jobs:
 
       - name: Build and archive
         env:
+          VERSION: ${{ needs.version.outputs.version }}
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: '0'
         shell: bash
         run: |
           set -euo pipefail
-          VERSION="${GITHUB_REF_NAME}"
+          VERSION_NO_V="${VERSION#v}"
           COMMIT="$(git rev-parse --short HEAD)"
-          LDFLAGS="-s -w -X rtc2tcp/internal/config.Version=${VERSION#v} -X rtc2tcp/internal/config.Commit=${COMMIT}"
+          LDFLAGS="-s -w -X rtc2tcp/internal/config.Version=${VERSION_NO_V} -X rtc2tcp/internal/config.Commit=${COMMIT}"
 
           pkg="rtc2tcp-${VERSION}-${GOOS}-${GOARCH}"
           mkdir -p "build/${pkg}" dist
@@ -59,10 +183,7 @@ jobs:
             go build -trimpath -ldflags "${LDFLAGS}" -o "build/${pkg}/${cmd}${EXT}" "./cmd/${cmd}"
           done
 
-          # Each archive ships with README, SECURITY, PROTOCOL, CHANGELOG
-          # and this file so an operator who downloaded a single tar.gz
-          # has everything they need without cloning the repo.
-          cp README.md SECURITY.md PROTOCOL.md CHANGELOG.md "build/${pkg}/"
+          cp README.md SECURITY.md PROTOCOL.md CHANGELOG.md LICENSE "build/${pkg}/"
 
           cd build
           if [ "${GOOS}" = "windows" ]; then
@@ -74,8 +195,6 @@ jobs:
           fi
           cd ..
 
-          # Per-archive checksum file so users can verify a single
-          # download without downloading the whole SHA256SUMS.
           ( cd dist && sha256sum "${archive}" > "${archive}.sha256" )
 
       - name: Upload build artifacts
@@ -86,9 +205,10 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  release:
-    name: release
-    needs: build
+  publish:
+    name: publish release
+    needs: [version, build]
+    if: needs.version.outputs.should_release == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -105,9 +225,6 @@ jobs:
         run: |
           set -euo pipefail
           cd dist
-          # Exclude per-archive .sha256 files from the aggregate manifest
-          # so the manifest is self-contained and does not reference
-          # other signature files.
           find . -maxdepth 1 -type f ! -name '*.sha256' ! -name 'SHA256SUMS*' -printf '%f\n' | \
             sort | xargs -I{} sha256sum "{}" > SHA256SUMS
           echo "--- SHA256SUMS ---"
@@ -129,7 +246,26 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            dist/*
+          tag_name: ${{ needs.version.outputs.version }}
+          name: ${{ needs.version.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          body: |
+            Automated release for `${{ github.sha }}`.
+
+            - Previous: `${{ needs.version.outputs.previous }}`
+            - Bump: `${{ needs.version.outputs.bump }}`
+
+            Verify with cosign:
+
+            ```
+            cosign verify-blob \
+              --certificate SHA256SUMS.pem \
+              --signature   SHA256SUMS.sig \
+              --certificate-identity-regexp 'https://github.com/.+/rtc2tcp/.github/workflows/release.yml@refs/heads/main' \
+              --certificate-oidc-issuer     'https://token.actions.githubusercontent.com' \
+              SHA256SUMS
+            sha256sum -c SHA256SUMS --ignore-missing
+            ```
+          files: dist/*
           generate_release_notes: true
           fail_on_unmatched_files: true
