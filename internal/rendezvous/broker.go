@@ -62,8 +62,8 @@ type Broker struct {
 	limiterIdleTTL  time.Duration
 	now             func() time.Time
 
-	trustedProxies      []trustedNet
-	trustedProxyHeader  string
+	trustedProxies     []trustedNet
+	trustedProxyHeader string
 
 	ipLimiter *keyedLimiter
 
