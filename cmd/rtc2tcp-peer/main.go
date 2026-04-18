@@ -51,6 +51,13 @@ func main() {
 	logger := log.New(os.Stdout, "", log.LstdFlags|log.Lmicroseconds)
 	build := config.CurrentBuild()
 
+	// Stop the terminal from echoing accidental keystrokes over our
+	// output (click-to-position-cursor in Mintty/ConEmu/WSL emits arrow
+	// keys on mouse click). Canonical mode and ISIG stay on — Ctrl+C
+	// still works. Restore fires on normal return and on the error path
+	// before os.Exit.
+	restoreTTY := silenceTTYEcho()
+
 	app := &app{
 		logger: logger,
 		build:  build,
@@ -59,12 +66,14 @@ func main() {
 	app.refreshPalette()
 
 	if err := app.run(os.Args[1:]); err != nil {
+		restoreTTY()
 		if !errors.Is(err, flag.ErrHelp) {
 			logger.Print(logx.Event("peer", "run_failed", "err", err.Error()))
 			app.printError(err)
 		}
 		os.Exit(1)
 	}
+	restoreTTY()
 }
 
 // refreshPalette recomputes the colour palette based on --no-color and
