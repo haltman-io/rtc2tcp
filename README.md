@@ -12,290 +12,161 @@
 [![Release](https://img.shields.io/github/v/release/haltman-io/rtc2tcp?include_prereleases&sort=semver&color=blue)](https://github.com/haltman-io/rtc2tcp/releases)
 [![License](https://img.shields.io/github/license/haltman-io/rtc2tcp?color=green)](LICENSE)
 [![Go Reference](https://pkg.go.dev/badge/github.com/haltman-io/rtc2tcp.svg)](https://pkg.go.dev/github.com/haltman-io/rtc2tcp)
-[![Go Version](https://img.shields.io/github/go-mod/go-version/haltman-io/rtc2tcp?logo=go&label=go)](go.mod)
-[![Go Report Card](https://goreportcard.com/badge/github.com/haltman-io/rtc2tcp)](https://goreportcard.com/report/github.com/haltman-io/rtc2tcp)
-
 [![CI](https://img.shields.io/github/actions/workflow/status/haltman-io/rtc2tcp/ci.yml?branch=main&label=CI&logo=github)](https://github.com/haltman-io/rtc2tcp/actions/workflows/ci.yml)
-[![Release Workflow](https://img.shields.io/github/actions/workflow/status/haltman-io/rtc2tcp/release.yml?label=release&logo=github)](https://github.com/haltman-io/rtc2tcp/actions/workflows/release.yml)
-[![Last Commit](https://img.shields.io/github/last-commit/haltman-io/rtc2tcp?logo=github)](https://github.com/haltman-io/rtc2tcp/commits/main)
-[![Issues](https://img.shields.io/github/issues/haltman-io/rtc2tcp?logo=github)](https://github.com/haltman-io/rtc2tcp/issues)
-[![Platform](https://img.shields.io/badge/platform-linux%20%7C%20macOS%20%7C%20windows-lightgrey)](#install)
+[![Platform](https://img.shields.io/badge/platform-linux%20%7C%20macOS%20%7C%20windows-lightgrey)](docs/install.md)
 
 [![Auth: CPACE-Ristretto255](https://img.shields.io/badge/auth-CPACE--Ristretto255-success?logo=letsencrypt&logoColor=white)](PROTOCOL.md)
 [![Broker: blind](https://img.shields.io/badge/broker-blind-informational)](SECURITY-NOTES.md)
 [![Signed releases: cosign](https://img.shields.io/badge/releases-signed%20(cosign)-success?logo=sigstore&logoColor=white)](SECURITY.md)
-[![Downloads](https://img.shields.io/github/downloads/haltman-io/rtc2tcp/total?color=brightgreen&logo=github)](https://github.com/haltman-io/rtc2tcp/releases)
-[![Stars](https://img.shields.io/github/stars/haltman-io/rtc2tcp?logo=github&color=yellow)](https://github.com/haltman-io/rtc2tcp/stargazers)
+[![Telegram](https://img.shields.io/badge/telegram-haltman__group-26A5E4?logo=telegram&logoColor=white)](https://t.me/haltman_group)
 
-`rtc2tcp` tunnels one TCP endpoint over an end-to-end encrypted WebRTC DataChannel. A broker is used for rendezvous and signaling only; it is not in the payload path.
+**Tunnel any TCP port over an end-to-end encrypted WebRTC DataChannel.**
+No inbound ports, no VPN, no accounts. The broker only introduces peers — it never sees payload bytes.
 
-Developed by [haltman.io](https://haltman.io/) · source at [github.com/haltman-io/rtc2tcp](https://github.com/haltman-io/rtc2tcp).
+---
 
-Milestone 1 protocol hardening and Milestone 2 peer authentication are implemented. Peer authentication is a balanced CPACE-Ristretto255 PAKE sourced from `github.com/cloudflare/circl`. The project implementation itself has not yet had an external security review — Milestone 3 scopes that work.
+## Install
+
+```bash
+# Pre-built, cosign-signed archives for Linux / macOS / Windows
+#   → https://github.com/haltman-io/rtc2tcp/releases/latest
+
+# Or from source
+go install github.com/haltman-io/rtc2tcp/cmd/rtc2tcp-peer@latest
+go install github.com/haltman-io/rtc2tcp/cmd/rtc2tcp-broker@latest
+```
+
+Signature verification and platform notes: [docs/install.md](docs/install.md).
+
+---
 
 ## Quick Start
 
-Two peers, three commands.
+Two peers. Three commands. No config.
 
-**Expose side** (the machine hosting the TCP service) — share local SSH. `--target` is required; everything else is auto-generated and printed back to you:
+**Expose** the TCP service you want to share:
 
-```
+```console
 $ rtc2tcp-peer expose --target 127.0.0.1:22
 
 Session credentials
   rendezvous token: jloh_XmGgi1HgUC3LWY7HA
   pairing secret  : N5mtwubpUlru9fyuOkf1Iw
-  broker          : http://127.0.0.1:8080
+  broker          : https://rtc.haltman.io/
   target          : 127.0.0.1:22
 
 Run this on the connecting machine:
-  rtc2tcp-peer connect rtc2tcp://jloh_XmGgi1HgUC3LWY7HA:N5mtwubpUlru9fyuOkf1Iw@127.0.0.1:8080
-
-The tunnel will surface on the connect side at 127.0.0.1:2222 by default.
-Override with --listen HOST:PORT. Keep this terminal open; closing it ends the tunnel.
+  rtc2tcp-peer connect rtc2tcp://jloh_XmGgi1HgUC3LWY7HA:N5mtwubpUlru9fyuOkf1Iw@rtc.haltman.io
 ```
 
-**Connect side** (the machine that will reach the remote target through a local port) — paste the printed command and pick the local port:
+**Connect** from anywhere — paste the printed command, pick a local port:
 
+```console
+$ rtc2tcp-peer connect rtc2tcp://…@rtc.haltman.io --listen 127.0.0.1:2222
+$ ssh -p 2222 root@localhost
 ```
-$ rtc2tcp-peer connect rtc2tcp://jloh_XmGgi1HgUC3LWY7HA:N5mtwubpUlru9fyuOkf1Iw@broker.example.com:8080 --listen 127.0.0.1:2223
-$ ssh -p 2223 root@localhost
-```
 
-That is the whole thing. The broker must be reachable by both peers; run one yourself with `rtc2tcp-broker --listen :8080`, or point `--broker` at a shared instance. For production hosting see [Hosting a broker](#hosting-a-broker).
+That's the whole thing. The tunnel is end-to-end encrypted; the broker cannot read it.
 
-## Binaries
+---
 
-- `rtc2tcp-broker`
-- `rtc2tcp-peer`
+## Examples
 
-`rtc2tcp-peer` provides:
+| Goal                                  | Expose                                              | Connect                                                                    |
+| ------------------------------------- | --------------------------------------------------- | -------------------------------------------------------------------------- |
+| SSH into a box behind NAT             | `rtc2tcp-peer expose -T 127.0.0.1:22`               | `rtc2tcp-peer connect <url> -l 127.0.0.1:2222` → `ssh -p 2222 user@localhost` |
+| Reach an internal HTTP admin panel    | `rtc2tcp-peer expose -T 10.0.0.5:8080`              | `rtc2tcp-peer connect <url> -l 127.0.0.1:8080` → `http://localhost:8080`   |
+| Access a Postgres / MySQL inside a VPC | `rtc2tcp-peer expose -T 10.0.0.12:5432`             | `rtc2tcp-peer connect <url> -l 127.0.0.1:5432` → `psql -h localhost`       |
+| RDP to a Windows host                 | `rtc2tcp-peer expose -T 127.0.0.1:3389`             | `rtc2tcp-peer connect <url> -l 127.0.0.1:3389`                             |
 
-- `expose`
-- `connect`
+Pin credentials instead of generating them each run — [docs/pinning-credentials.md](docs/pinning-credentials.md).
 
-## Architecture
+---
 
-- `cmd/rtc2tcp-broker`
-  Runs the WebSocket broker and pairs peers by `rendezvous_token`.
-- `cmd/rtc2tcp-peer`
-  Runs the `expose` or `connect` role.
-- `internal/signaling`
-  Defines broker messages and the WebSocket client.
-- `internal/webrtc`
-  Owns the session state machine, WebRTC transport, control channel, and transport-binding logic.
-- `internal/auth`
-  Holds the interactive peer-authentication subsystem (CPACE-Ristretto255 by default, with a clearly-gated transitional ECDH scheme retained for rollout compatibility only).
-- `internal/tunnel`
-  Bridges a TCP connection to a WebRTC DataChannel.
+## Public broker
 
-The broker sees:
+**`https://rtc.haltman.io/`** is a free, public broker operated by [haltman.io](https://haltman.io/) for community use and testing.
 
-- `rendezvous_token`
-- peer mode
-- session lifecycle
-- SDP and ICE metadata
+- Blind by design. It sees rendezvous tokens, ICE metadata, and nothing more. Payload is end-to-end encrypted between your peers.
+- Best-effort, no SLA. Fine for ad-hoc use, demos, CI, and one-off support calls.
+- Rate-limited per IP. If you need guaranteed capacity or you're shipping a product on top, [self-host one](#self-host-a-broker).
+- Defaults in the peer binaries already point at it — nothing to configure.
 
-The broker does not relay:
+To opt out, pass `--broker <your-url>` or build with `-ldflags "-X …DefaultBrokerURL=…"` ([docs/build.md](docs/build.md)).
 
-- TCP payload bytes
-- DataChannel plaintext
+---
 
-## Security Shape
+## Acceptable use
 
-Milestone 1 (protocol hardening):
+This tool exists for research, education, administration, and legitimate remote access. Using it to commit crimes is not clever and not welcome.
 
-- `rendezvous_token` is broker-visible and operator-supplied.
-- `pairing_secret` is separate from the rendezvous token and is loaded locally from a file, environment variable, or compatibility flag.
-- Non-control DataChannels are forbidden before authentication; any payload-channel-before-auth event fails the session.
-- Broker transport must be `wss://` except for localhost development.
-- Broker origin handling is restricted to same-host or no-origin clients.
-- Session state is explicit: `INIT`, `RENDEZVOUS`, `SIGNALING`, `AUTH_PENDING`, `AUTHENTICATED`, `STREAMING`, `CLOSING`, `CLOSED`, `FAILED`.
+**The following are prohibited when using `rtc.haltman.io`:**
 
-Milestone 2 (peer authentication):
+- Ransomware, wipers, stalkerware, or any malware delivery
+- Botnet command-and-control
+- DDoS, reflection, amplification, or traffic laundering
+- Fraud, phishing infrastructure, credential stuffing
+- Unauthorised access to systems you don't own or have explicit written permission to reach
+- Harassment, doxxing, or "revenge" operations
 
-- Peer authentication is an interactive three-message handshake (`hello` -> `accept` -> `confirm`) over the WebRTC control DataChannel.
-- Default scheme: CPACE-Ristretto255 (`rtc2tcp-auth/cpace-ristretto255-v2`), using the prime-order group from `github.com/cloudflare/circl/group`.
-- Transcript binds scheme, session id, both peer roles, both application-section DTLS fingerprints, and both raw group shares.
-- Role-separated HMAC-SHA256 key confirmation over the transcript is compared with `crypto/subtle.ConstantTimeCompare`.
-- A transitional ECDH scheme (`rtc2tcp-auth/interactive-ecdh-v2a`) remains compiled in for rollout compatibility. It is not a PAKE; CPACE-configured peers refuse it structurally via the scheme-pin check.
+We do not host criminal operations. Valid abuse reports are reviewed. Confirmed abuse is terminated without notice and, where law enforcement is involved, cooperated with.
 
-See [PROTOCOL.md](PROTOCOL.md), [THREAT-MODEL.md](THREAT-MODEL.md), [SECURITY.md](SECURITY.md), [CHANGELOG.md](CHANGELOG.md), and [TODO.md](TODO.md) for the current execution status.
+Abuse reports: **root@haltman.io** (PGP key on [haltman.io](https://haltman.io/)).
+Security vulnerabilities: see [SECURITY.md](SECURITY.md).
 
-## Known Limitations
+Your responsibility, not ours. The software is offered under the [LICENSE](LICENSE) as-is.
 
-- The CPACE-Ristretto255 primitive is sourced from `github.com/cloudflare/circl`; its own test vectors are relied upon. The rtc2tcp integration (transcript construction, key schedule, session-binding material, state machine) has unit and pion-loopback end-to-end coverage but has not yet had an external security review.
-- Broker is in-memory only; no persistence or clustering. Per-source-IP rate limiting, origin restrictions, and message-size limits are in place; abuse controls beyond that are out of scope.
-- No TURN credential minting backend; TURN credentials are operator-supplied and static.
-- No certificate-pinning UI or out-of-band verifier UX.
+---
 
-## Build
+## Self-host a broker
 
-Quick local build:
+Run your own in one command:
 
 ```bash
-go build ./cmd/rtc2tcp-broker
-go build ./cmd/rtc2tcp-peer
+rtc2tcp-broker --listen :8080
 ```
 
-Reproducible build (used by CI and release):
+For a production deploy behind Caddy, nginx, or Cloudflare Tunnel — with TLS, trusted-proxy rate limiting, and a systemd service — see:
 
-```bash
-make all
-# equivalent to:
-# CGO_ENABLED=0 go build -trimpath \
-#   -ldflags "-s -w \
-#             -X github.com/haltman-io/rtc2tcp/internal/config.Version=$(git describe --tags --always --dirty) \
-#             -X github.com/haltman-io/rtc2tcp/internal/config.Commit=$(git rev-parse --short HEAD)" \
-#   -o bin/rtc2tcp-broker ./cmd/rtc2tcp-broker
-```
+- [docs/reverse-proxy.md](docs/reverse-proxy.md) — Caddy, nginx, Cloudflare Tunnel worked examples.
+- [contrib/systemd/](contrib/systemd/) — hardened unit + `install.sh` / `uninstall.sh`.
 
-Embed a default broker URL at build time:
+---
 
-```bash
-go build -trimpath \
-  -ldflags "-X github.com/haltman-io/rtc2tcp/internal/config.DefaultBrokerURL=https://broker.example.com \
-            -X github.com/haltman-io/rtc2tcp/internal/config.Version=0.1.0 \
-            -X github.com/haltman-io/rtc2tcp/internal/config.Commit=$(git rev-parse --short HEAD)" \
-  ./cmd/rtc2tcp-peer
-```
+## Documentation
 
-Release artifacts (per-platform binaries, `SHA256SUMS`, cosign signature + certificate) are produced by `.github/workflows/release.yml` on `v*` tags. See [SECURITY.md](SECURITY.md) for the verification recipe.
+| Topic                                                   | File                                                        |
+| ------------------------------------------------------- | ----------------------------------------------------------- |
+| Install (pre-built, from source, verify signatures)     | [docs/install.md](docs/install.md)                          |
+| Build from source (ldflags, reproducible builds)        | [docs/build.md](docs/build.md)                              |
+| Architecture (what the broker sees, package layout)     | [docs/architecture.md](docs/architecture.md)                |
+| Security overview (auth scheme, state machine, limits)  | [docs/security-overview.md](docs/security-overview.md)      |
+| Reverse-proxy setup (Caddy, nginx, Cloudflare Tunnel)   | [docs/reverse-proxy.md](docs/reverse-proxy.md)              |
+| Pinning credentials (long-lived setups, env vars)       | [docs/pinning-credentials.md](docs/pinning-credentials.md)  |
+| All flags (peer + broker cheat sheet)                   | [docs/flags.md](docs/flags.md)                              |
+| TURN relay configuration                                | [docs/turn.md](docs/turn.md)                                |
+| Local development (run everything from source)          | [docs/development.md](docs/development.md)                  |
+| Release pipeline (semver automation)                    | [docs/releases.md](docs/releases.md)                        |
+| Wire protocol                                           | [PROTOCOL.md](PROTOCOL.md)                                  |
+| Threat model                                            | [THREAT-MODEL.md](THREAT-MODEL.md)                          |
+| Security posture + vulnerability reporting              | [SECURITY.md](SECURITY.md)                                  |
+| Authenticator design notes                              | [docs/authenticator-design.md](docs/authenticator-design.md) |
+| Changelog                                               | [CHANGELOG.md](CHANGELOG.md)                                |
 
-## Local Run
+---
 
-Start the broker in one terminal:
+## Community
 
-```bash
-go run ./cmd/rtc2tcp-broker --listen :8080
-```
+- Telegram: [**t.me/haltman_group**](https://t.me/haltman_group)
+- Issues / features: [github.com/haltman-io/rtc2tcp/issues](https://github.com/haltman-io/rtc2tcp/issues)
+- Security: [SECURITY.md](SECURITY.md)
 
-In a second terminal, expose a target (`--target` is required):
+---
 
-```bash
-go run ./cmd/rtc2tcp-peer expose --target 127.0.0.1:22
-```
+## Shoutz
 
-The expose side prints a `rtc2tcp-peer connect rtc2tcp://…` command. Paste it on the third terminal (or a different machine reachable by the same broker), and pick the local port where the tunnel should surface:
+- thc.org / [@hackerschoice](https://github.com/hackerschoice) - [@ohmymex](https://github.com/ohmymex)
 
-```bash
-go run ./cmd/rtc2tcp-peer connect rtc2tcp://<token>:<secret>@127.0.0.1:8080 --listen 127.0.0.1:2223
-ssh -p 2223 root@localhost
-```
+---
 
-## Hosting a broker
-
-For production use the broker is designed to run behind a reverse proxy that handles TLS. Two pieces are provided:
-
-- **Reverse-proxy configuration** — worked examples for Caddy, nginx, and Cloudflare Tunnel, plus the `--trusted-proxies` / `--trusted-proxy-header` flags that make per-IP rate limiting see the real client instead of the proxy. See [`docs/reverse-proxy.md`](docs/reverse-proxy.md).
-- **systemd service** — a hardened unit file plus `install.sh` / `uninstall.sh` that provision a dedicated `rtc2tcp` user and an editable `/etc/rtc2tcp/broker.env`. See [`contrib/systemd/`](contrib/systemd/).
-
-One-shot install on a Linux host:
-
-```bash
-make all
-sudo ./contrib/systemd/install.sh
-sudo ${EDITOR:-nano} /etc/rtc2tcp/broker.env   # listen address, trusted proxies, rate limits
-sudo systemctl restart rtc2tcp-broker
-```
-
-Broker flags relevant to hosting:
-
-| Flag                        | Default             | Effect                                                                                                     |
-| --------------------------- | ------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `--listen`                  | `:8080`             | HTTP listen address. Behind a reverse proxy on the same host, prefer `127.0.0.1:8080`.                     |
-| `--trusted-proxies`         | *(empty)*           | Comma-separated IPs/CIDRs whose forwarded-for headers are honoured. Empty disables forwarded-for parsing.  |
-| `--trusted-proxy-header`    | `X-Forwarded-For`   | `X-Forwarded-For`, `X-Real-IP`, or `CF-Connecting-IP`.                                                     |
-| `--rate-limit-per-minute`   | `30`                | Per-client-IP WebSocket upgrade rate.                                                                      |
-| `--rate-limit-burst`        | `10`                | Per-client-IP burst.                                                                                        |
-
-## Pinning Credentials
-
-For long-lived setups or operator-supplied secrets, skip auto-generation and pin values explicitly. Use a file or environment variable rather than a command-line flag so the pairing secret does not land in shell history:
-
-```bash
-export RTC2TCP_RENDEZVOUS_TOKEN=lab-demo
-export RTC2TCP_PAIRING_SECRET_FILE=pairing-secret.txt
-
-rtc2tcp-peer expose  --target 127.0.0.1:22
-rtc2tcp-peer connect --listen 127.0.0.1:2222
-```
-
-Short flags are available for every long option: `-t/--rendezvous-token`, `-s/--pairing-secret`, `-b/--broker`, `-T/--target`, `-l/--listen`, `-q/--quiet`, `-V/--version`.
-
-## Flags Cheat Sheet
-
-| Global                                         | Effect                                            |
-| ---------------------------------------------- | ------------------------------------------------- |
-| `-q`, `--quiet`, `--silent`                    | Suppress the banner and informational chatter.   |
-| `--no-color`                                   | Disable ANSI colours (also respects `NO_COLOR`). |
-| `-V`, `--version`                              | Print version and exit.                          |
-| `-h`, `--help`                                 | Show help.                                        |
-
-## Install
-
-### Pre-built binaries
-
-Grab a release from [github.com/haltman-io/rtc2tcp/releases](https://github.com/haltman-io/rtc2tcp/releases). Each release publishes signed binaries for `linux/{amd64,arm64}`, `darwin/{amd64,arm64}`, and `windows/amd64`, packaged as `.tar.gz` / `.zip` with a `SHA256SUMS` manifest and a cosign signature. Verification recipe is in [SECURITY.md](SECURITY.md).
-
-Releases are produced automatically on every push to `main` (see [Releases](#releases) below).
-
-### From source
-
-```bash
-go install github.com/haltman-io/rtc2tcp/cmd/rtc2tcp-peer@latest
-go install github.com/haltman-io/rtc2tcp/cmd/rtc2tcp-broker@latest
-```
-
-## Releases
-
-The release pipeline is fully automatic. Every push to `main` runs [`.github/workflows/release.yml`](.github/workflows/release.yml), which:
-
-1. Parses commit subjects since the last `v*` tag as [Conventional Commits](https://www.conventionalcommits.org/).
-2. Computes the next [semantic version](https://semver.org):
-   - `feat!:` / `fix!:` / `BREAKING CHANGE:` → **major** bump.
-   - `feat:` → **minor** bump.
-   - `fix:` / `perf:` / `refactor:` / `revert:` → **patch** bump.
-   - Everything else (`chore:`, `docs:`, `ci:`, `test:`, `style:`, `build:`) → no release.
-3. Cross-compiles both binaries for the five supported targets with `-trimpath` and build-stamped `Version` / `Commit` via ldflags.
-4. Packages each target as a `.tar.gz` (Unix) or `.zip` (Windows), bundling `README.md`, `LICENSE`, `SECURITY.md`, `PROTOCOL.md`, and `CHANGELOG.md` alongside the binaries.
-5. Generates an aggregate `SHA256SUMS`, signs it keyless via Sigstore cosign with GitHub OIDC, and attaches `SHA256SUMS`, `SHA256SUMS.sig`, `SHA256SUMS.pem`, plus every archive and its `.sha256` file to an auto-created GitHub Release at `vX.Y.Z`.
-
-### Cutting a release
-
-Just push conventional commits:
-
-```bash
-git commit -m "feat: add --connection flag to rtc2tcp-peer connect"
-git push origin main
-```
-
-Within ~3 minutes the GitHub Release appears with signed artifacts.
-
-### Releasing a specific version manually
-
-In the GitHub UI under **Actions → release → Run workflow**, enter `vX.Y.Z` in the `version` field. The detector is skipped and that version is released verbatim.
-
-### Skipping a release
-
-Use non-bumping Conventional Commit types:
-
-```bash
-git commit -m "chore: bump internal fuzzer seed"
-git commit -m "docs: reword quick start"
-git commit -m "ci: move windows runner to 2025"
-```
-
-These push to `main` without creating a release.
-
-## TURN
-
-TURN remains optional and generic:
-
-```bash
---turn turn:turn.example.net:3478?transport=udp \
---turn-username demo \
---turn-password demo-secret
-```
-
-Cloudflare-specific provider work is intentionally deferred and not part of the core protocol design.
+Built by [haltman.io](https://haltman.io/). Source: [github.com/haltman-io/rtc2tcp](https://github.com/haltman-io/rtc2tcp).
