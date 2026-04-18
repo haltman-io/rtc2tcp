@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -10,23 +11,54 @@ import (
 	"syscall"
 	"time"
 
+	"rtc2tcp/internal/banner"
 	"rtc2tcp/internal/config"
 	"rtc2tcp/internal/rendezvous"
 )
 
+const toolName = "rtc2tcp-broker"
+
 func main() {
 	build := config.CurrentBuild()
 
-	var (
-		listen  = flag.String("listen", ":8080", "HTTP listen address")
-		version = flag.Bool("version", false, "print version and exit")
-	)
-	flag.Parse()
+	fs := flag.NewFlagSet(toolName, flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
 
-	if *version {
-		log.Printf("rtc2tcp-broker version=%s commit=%s default-broker=%s", build.Version, build.Commit, build.DefaultBrokerURL)
+	var (
+		listen      = fs.String("listen", ":8080", "HTTP listen address")
+		versionOnly = fs.Bool("version", false, "print version and exit")
+		quiet       = fs.Bool("quiet", false, "suppress banner")
+		silent      = fs.Bool("silent", false, "alias for --quiet")
+		noColor     = fs.Bool("no-color", false, "disable ANSI colours")
+	)
+	fs.BoolVar(versionOnly, "V", false, "alias for --version")
+	fs.BoolVar(quiet, "q", false, "alias for --quiet")
+
+	fs.Usage = func() {
+		banner.Print(os.Stderr, banner.Options{
+			Build: build,
+			Tool:  toolName,
+		})
+		fmt.Fprintln(os.Stderr, "Usage: "+toolName+" [flags]")
+		fmt.Fprintln(os.Stderr)
+		fs.PrintDefaults()
+	}
+
+	if err := fs.Parse(os.Args[1:]); err != nil {
+		os.Exit(2)
+	}
+
+	if *versionOnly {
+		fmt.Fprintln(os.Stdout, banner.VersionLine(toolName, build))
 		return
 	}
+
+	banner.Print(os.Stderr, banner.Options{
+		Quiet:   *quiet || *silent,
+		NoColor: *noColor,
+		Build:   build,
+		Tool:    toolName,
+	})
 
 	logger := log.New(os.Stdout, "", log.LstdFlags|log.Lmicroseconds)
 	broker := rendezvous.NewBroker(logger)

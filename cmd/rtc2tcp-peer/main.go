@@ -5,11 +5,13 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -17,6 +19,8 @@ import (
 	pion "github.com/pion/webrtc/v4"
 
 	"rtc2tcp/internal/auth"
+	"rtc2tcp/internal/banner"
+	"rtc2tcp/internal/color"
 	"rtc2tcp/internal/config"
 	"rtc2tcp/internal/logx"
 	"rtc2tcp/internal/rendezvous"
@@ -26,74 +30,96 @@ import (
 )
 
 const (
+	toolName         = "rtc2tcp-peer"
 	defaultSTUN      = "stun:stun.l.google.com:19302"
+	defaultListen    = "127.0.0.1:2222"
 	authTimeout      = 45 * time.Second
 	brokerSendTimout = 10 * time.Second
 )
 
 type app struct {
-	logger *log.Logger
-	build  config.BuildInfo
+	logger  *log.Logger
+	build   config.BuildInfo
+	stderr  io.Writer
+	quiet   bool
+	noColor bool
+	palette *color.Palette
 }
 
 func main() {
+	stderr := os.Stderr
 	logger := log.New(os.Stdout, "", log.LstdFlags|log.Lmicroseconds)
 	build := config.CurrentBuild()
 
 	app := &app{
 		logger: logger,
 		build:  build,
+		stderr: stderr,
 	}
+	app.refreshPalette()
 
 	if err := app.run(os.Args[1:]); err != nil {
-		logger.Print(logx.Event("peer", "run_failed", "err", err.Error()))
+		if !errors.Is(err, flag.ErrHelp) {
+			logger.Print(logx.Event("peer", "run_failed", "err", err.Error()))
+			app.printError(err)
+		}
 		os.Exit(1)
 	}
 }
 
+// refreshPalette recomputes the colour palette based on --no-color and
+// TTY detection. Called once at startup and again after the subcommand
+// parser has toggled a.noColor.
+func (a *app) refreshPalette() {
+	a.palette = color.New(!a.noColor && color.Detect(a.stderr))
+}
+
 func (a *app) run(args []string) error {
+	// Peek global flags before subcommand dispatch so the banner is
+	// suppressed early on `--quiet`/`-q`/`--silent` and does not
+	// render colours under `--no-color`.
+	a.quiet = peekBool(args, "quiet", "silent", "q")
+	a.noColor = peekBool(args, "no-color")
+	a.refreshPalette()
+
 	if len(args) == 0 {
+		a.showBanner("")
 		a.printRootUsage()
 		return errors.New("subcommand required")
 	}
 
 	switch args[0] {
 	case "expose":
-		options, versionOnly, err := a.parsePeerFlags(config.ModeExpose, args[1:])
-		if err != nil {
-			if errors.Is(err, flag.ErrHelp) {
-				return nil
-			}
-			return err
-		}
-		if versionOnly {
-			a.printVersion()
-			return nil
-		}
-		return a.runPeer(options)
+		return a.runSubcommand(config.ModeExpose, args[1:])
 	case "connect":
-		options, versionOnly, err := a.parsePeerFlags(config.ModeConnect, args[1:])
-		if err != nil {
-			if errors.Is(err, flag.ErrHelp) {
-				return nil
-			}
-			return err
-		}
-		if versionOnly {
-			a.printVersion()
-			return nil
-		}
-		return a.runPeer(options)
+		return a.runSubcommand(config.ModeConnect, args[1:])
 	case "-h", "--help", "help":
+		a.showBanner("")
 		a.printRootUsage()
 		return nil
-	case "-version", "--version", "version":
-		a.printVersion()
+	case "-v", "-V", "-version", "--version", "version":
+		fmt.Fprintln(os.Stdout, banner.VersionLine(toolName, a.build))
 		return nil
 	default:
+		a.showBanner("")
 		a.printRootUsage()
 		return fmt.Errorf("unknown subcommand %q", args[0])
 	}
+}
+
+func (a *app) runSubcommand(mode config.PeerMode, args []string) error {
+	options, versionOnly, err := a.parsePeerFlags(mode, args)
+	if err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
+		return err
+	}
+	if versionOnly {
+		fmt.Fprintln(os.Stdout, banner.VersionLine(toolName, a.build))
+		return nil
+	}
+	return a.runPeer(options)
 }
 
 func (a *app) runPeer(options config.PeerOptions) error {
@@ -115,10 +141,15 @@ func (a *app) runPeer(options config.PeerOptions) error {
 	// the CPACE-Ristretto255 scheme; if a future refactor of
 	// NewInteractiveAuthenticator silently returns a weaker scheme,
 	// fail loudly at startup rather than authenticating over it.
-	// Remove this check only when introducing a deliberate and
-	// documented scheme upgrade path.
 	if authenticator.Name() != auth.SchemeCPACEV2 {
 		return fmt.Errorf("peer requires auth scheme %q, got %q", auth.SchemeCPACEV2, authenticator.Name())
+	}
+
+	a.showBanner(string(options.Mode))
+	if options.Mode == config.ModeExpose {
+		a.printExposeHandoff(options)
+	} else {
+		a.printConnectSummary(options)
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -142,6 +173,7 @@ func (a *app) runPeer(options config.PeerOptions) error {
 	}
 
 	a.event("rendezvous_registered", "mode", options.Mode, "broker", options.BrokerURL)
+	a.info("Registered with broker; waiting for peer…")
 
 	var (
 		session          *rtcwebrtc.Session
@@ -187,15 +219,18 @@ func (a *app) runPeer(options config.PeerOptions) error {
 		case err := <-authResultCh:
 			if err != nil {
 				a.logAuthFailure(options.Mode, authenticator.Name(), err)
+				a.printError(fmt.Errorf("authentication failed: %w", err))
 				if session != nil {
 					_ = session.Fail(fmt.Errorf("authentication did not complete: %w", err))
 				}
 				return err
 			}
 			a.event("session_ready", "mode", options.Mode)
+			a.success("Authenticated with remote peer.")
 			startListener()
 			if options.Mode == config.ModeExpose {
 				a.event("expose_ready", "target", options.Target)
+				a.info("Forwarding inbound streams to %s.", options.Target)
 			}
 		case err := <-listenerResultCh:
 			if err != nil && !errors.Is(err, context.Canceled) {
@@ -227,6 +262,8 @@ func (a *app) runPeer(options config.PeerOptions) error {
 				if err != nil {
 					return failSession(err)
 				}
+
+				a.info("Paired with peer, session %s — running CPACE handshake…", message.Paired.SessionID)
 
 				authResultCh = make(chan error, 1)
 				go func() {
@@ -380,6 +417,7 @@ func (a *app) runListener(ctx context.Context, listen string, session *rtcwebrtc
 	defer listener.Close()
 
 	a.event("listening", "addr", listen)
+	a.success("Listening on %s — forward clients through this address.", listen)
 
 	stop := make(chan struct{})
 	defer close(stop)
@@ -429,6 +467,11 @@ func (a *app) sendSignal(ctx context.Context, client *signaling.Client, signal s
 	return client.SendSignal(sendCtx, signal)
 }
 
+// parsePeerFlags handles both subcommands. It registers long flags plus
+// short single-letter aliases via the stdlib `flag` package (multiple
+// registrations with the same pointer target). The connect subcommand
+// additionally accepts an optional positional `rtc2tcp://…` connection
+// string as the first argument.
 func (a *app) parsePeerFlags(mode config.PeerMode, args []string) (config.PeerOptions, bool, error) {
 	defaultBroker := a.build.DefaultBrokerURL
 	if defaultBroker == "" {
@@ -436,7 +479,7 @@ func (a *app) parsePeerFlags(mode config.PeerMode, args []string) (config.PeerOp
 	}
 
 	fs := flag.NewFlagSet(mode.String(), flag.ContinueOnError)
-	fs.SetOutput(os.Stdout)
+	fs.SetOutput(a.stderr)
 
 	options := config.PeerOptions{
 		Mode: mode,
@@ -446,56 +489,206 @@ func (a *app) parsePeerFlags(mode config.PeerMode, args []string) (config.PeerOp
 		BrokerURL: defaultBroker,
 	}
 
-	var versionOnly bool
 	var (
+		versionOnly       bool
 		pairingSecret     string
 		pairingSecretFile string
 		legacySecret      string
 		legacySecretFile  string
+		connectionString  string
 	)
 
-	fs.StringVar(&options.RendezvousToken, "rendezvous-token", "", "broker-visible pairing token; prefer a random opaque value or set "+config.EnvRendezvousToken)
-	fs.StringVar(&pairingSecret, "pairing-secret", "", "peer pairing secret; prefer --pairing-secret-file or "+config.EnvPairingSecretFile)
-	fs.StringVar(&pairingSecretFile, "pairing-secret-file", "", "path to the peer pairing secret file; preferred over direct CLI secret flags")
+	// Long flags + environment.
+	fs.StringVar(&options.RendezvousToken, "rendezvous-token", "", "broker-visible pairing token (auto-generated on expose if unset; required on connect)")
+	fs.StringVar(&pairingSecret, "pairing-secret", "", "peer pairing secret (auto-generated on expose if unset; prefer --pairing-secret-file)")
+	fs.StringVar(&pairingSecretFile, "pairing-secret-file", "", "read pairing secret from file (preferred over --pairing-secret)")
 	fs.StringVar(&legacySecret, "secret", "", "deprecated alias for --pairing-secret")
 	fs.StringVar(&legacySecretFile, "secret-file", "", "deprecated alias for --pairing-secret-file")
-	fs.StringVar(&options.BrokerURL, "broker", options.BrokerURL, "broker URL, for example http://127.0.0.1:8080 or ws://127.0.0.1:8080/ws")
-	fs.StringVar(&options.ICE.STUN, "stun", options.ICE.STUN, "STUN server URL, set to empty string to disable")
-	fs.StringVar(&options.ICE.TURN, "turn", "", "TURN server URL, for example turn:127.0.0.1:3478?transport=udp")
+	fs.StringVar(&options.BrokerURL, "broker", options.BrokerURL, "broker URL, e.g. http://127.0.0.1:8080 or wss://broker.example.com")
+	fs.StringVar(&options.ICE.STUN, "stun", options.ICE.STUN, "STUN server URL (set empty to disable)")
+	fs.StringVar(&options.ICE.TURN, "turn", "", "TURN server URL, e.g. turn:turn.example.net:3478?transport=udp")
 	fs.StringVar(&options.ICE.TURNUsername, "turn-username", "", "TURN username")
 	fs.StringVar(&options.ICE.TURNPassword, "turn-password", "", "TURN password")
+	fs.StringVar(&connectionString, "connection", "", "rtc2tcp://token:secret@host[:port] connection string (connect mode)")
 	fs.BoolVar(&versionOnly, "version", false, "print version and exit")
+	fs.BoolVar(&a.quiet, "quiet", false, "suppress banner and informational output")
+	fs.BoolVar(&a.quiet, "silent", false, "alias for --quiet")
+	fs.BoolVar(&a.noColor, "no-color", false, "disable ANSI colors")
+
+	// Short aliases, same target pointers.
+	fs.StringVar(&options.RendezvousToken, "t", "", "alias for --rendezvous-token")
+	fs.StringVar(&pairingSecret, "s", "", "alias for --pairing-secret")
+	fs.StringVar(&options.BrokerURL, "b", options.BrokerURL, "alias for --broker")
+	fs.BoolVar(&versionOnly, "V", false, "alias for --version")
+	fs.BoolVar(&a.quiet, "q", false, "alias for --quiet")
 
 	switch mode {
 	case config.ModeExpose:
-		fs.StringVar(&options.Target, "target", "", "local TCP target to expose, for example 127.0.0.1:22")
+		fs.StringVar(&options.Target, "target", "", "local TCP target to expose, e.g. 127.0.0.1:22")
+		fs.StringVar(&options.Target, "T", "", "alias for --target")
 	case config.ModeConnect:
-		fs.StringVar(&options.Listen, "listen", "127.0.0.1:2222", "local TCP listen address, for example 127.0.0.1:2222")
+		fs.StringVar(&options.Listen, "listen", defaultListen, "local TCP listen address, e.g. 127.0.0.1:2222")
+		fs.StringVar(&options.Listen, "l", defaultListen, "alias for --listen")
+	}
+
+	fs.Usage = func() {
+		a.showBanner(string(mode))
+		a.printSubcommandUsage(mode)
+	}
+
+	// Peel off a positional connection string for connect mode.
+	if mode == config.ModeConnect && len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		connectionString = args[0]
+		args = args[1:]
 	}
 
 	if err := fs.Parse(args); err != nil {
 		return config.PeerOptions{}, false, err
 	}
+	a.refreshPalette()
 
-	var err error
-	options.RendezvousToken, err = config.ResolveRendezvousToken(options.RendezvousToken)
+	if versionOnly {
+		return options, true, nil
+	}
+
+	// Connection string overrides only those fields the user has not
+	// explicitly passed.
+	if strings.TrimSpace(connectionString) != "" {
+		cs, err := config.ParseConnectionString(connectionString)
+		if err != nil {
+			return config.PeerOptions{}, false, fmt.Errorf("parse --connection: %w", err)
+		}
+		if strings.TrimSpace(options.RendezvousToken) == "" {
+			options.RendezvousToken = cs.RendezvousToken
+		}
+		if pairingSecret == "" && pairingSecretFile == "" && legacySecret == "" && legacySecretFile == "" {
+			pairingSecret = cs.PairingSecret
+		}
+		if options.BrokerURL == defaultBroker {
+			options.BrokerURL = cs.BrokerURL
+		}
+	}
+
+	// Token resolution. Auto-generated on expose if missing; required
+	// (with a helpful message) on connect.
+	options.RendezvousToken = config.ResolveRendezvousTokenOptional(options.RendezvousToken)
+	if options.RendezvousToken == "" {
+		if mode == config.ModeExpose {
+			tok, err := config.RandomToken()
+			if err != nil {
+				return config.PeerOptions{}, false, fmt.Errorf("generate rendezvous token: %w", err)
+			}
+			options.RendezvousToken = tok
+		} else {
+			return config.PeerOptions{}, false, fmt.Errorf("rendezvous token is required: pass --rendezvous-token, --connection, set %s, or paste the rtc2tcp://… connection string", config.EnvRendezvousToken)
+		}
+	}
+
+	// Pairing secret resolution. Same auto-gen rule.
+	secret, err := config.ResolvePairingSecretOptional(pairingSecret, pairingSecretFile, legacySecret, legacySecretFile)
 	if err != nil {
 		return config.PeerOptions{}, false, err
 	}
-	options.PairingSecret, err = config.ResolvePairingSecret(pairingSecret, pairingSecretFile, legacySecret, legacySecretFile)
-	if err != nil {
-		return config.PeerOptions{}, false, err
+	if secret == "" {
+		if mode == config.ModeExpose {
+			gen, err := config.RandomToken()
+			if err != nil {
+				return config.PeerOptions{}, false, fmt.Errorf("generate pairing secret: %w", err)
+			}
+			secret = gen
+		} else {
+			return config.PeerOptions{}, false, fmt.Errorf("pairing secret is required: pass --pairing-secret, --pairing-secret-file, --connection, set %s/%s, or paste the rtc2tcp://… connection string", config.EnvPairingSecretFile, config.EnvPairingSecret)
+		}
+	}
+	options.PairingSecret = secret
+
+	return options, false, nil
+}
+
+// printExposeHandoff renders the auto-generated credentials and the
+// one-liner connect command for the remote peer. This is the single
+// most important UX moment: a user running `rtc2tcp-peer expose
+// --target 127.0.0.1:22` must see, without scrolling or reading docs,
+// exactly what to paste on the other machine.
+func (a *app) printExposeHandoff(options config.PeerOptions) {
+	if a.quiet {
+		return
 	}
 
-	return options, versionOnly, nil
+	p := a.palette
+	cs := config.ConnectionString{
+		RendezvousToken: options.RendezvousToken,
+		PairingSecret:   options.PairingSecret,
+		BrokerURL:       options.BrokerURL,
+	}
+	formatted, err := cs.Format()
+	if err != nil {
+		a.printError(fmt.Errorf("format connection string: %w", err))
+		return
+	}
+
+	fmt.Fprintln(a.stderr, p.Bold("Session credentials"))
+	fmt.Fprintf(a.stderr, "  %s %s\n", p.Muted("rendezvous token:"), p.Cyan(options.RendezvousToken))
+	fmt.Fprintf(a.stderr, "  %s %s\n", p.Muted("pairing secret  :"), p.Cyan(options.PairingSecret))
+	fmt.Fprintf(a.stderr, "  %s %s\n", p.Muted("broker          :"), p.Cyan(options.BrokerURL))
+	fmt.Fprintf(a.stderr, "  %s %s\n", p.Muted("target          :"), p.Cyan(options.Target))
+	fmt.Fprintln(a.stderr)
+	fmt.Fprintln(a.stderr, p.Bold("Run this on the connecting machine:"))
+	fmt.Fprintf(a.stderr, "  %s %s\n",
+		p.Green(toolName+" connect"),
+		p.Green(formatted),
+	)
+	fmt.Fprintln(a.stderr)
+	fmt.Fprintln(a.stderr, p.Muted("Keep this terminal open; closing it ends the tunnel."))
+	fmt.Fprintln(a.stderr)
 }
 
-func (a *app) printVersion() {
-	a.logger.Printf("rtc2tcp-peer version=%s commit=%s default-broker=%s", a.build.Version, a.build.Commit, a.build.DefaultBrokerURL)
+func (a *app) printConnectSummary(options config.PeerOptions) {
+	if a.quiet {
+		return
+	}
+	p := a.palette
+	fmt.Fprintln(a.stderr, p.Bold("Connecting"))
+	fmt.Fprintf(a.stderr, "  %s %s\n", p.Muted("broker          :"), p.Cyan(options.BrokerURL))
+	fmt.Fprintf(a.stderr, "  %s %s\n", p.Muted("rendezvous token:"), p.Cyan(options.RendezvousToken))
+	fmt.Fprintf(a.stderr, "  %s %s\n", p.Muted("local listen    :"), p.Cyan(options.Listen))
+	fmt.Fprintln(a.stderr)
 }
 
-// event emits a structured peer log line via logx.Event. Kept as a
-// thin method so call sites read as `a.event("auth_failure", ...)`.
+// ---------- output helpers ----------
+
+func (a *app) showBanner(role string) {
+	banner.Print(a.stderr, banner.Options{
+		Quiet:   a.quiet,
+		NoColor: a.noColor,
+		Build:   a.build,
+		Tool:    toolName,
+		Role:    role,
+	})
+}
+
+func (a *app) info(format string, args ...any) {
+	if a.quiet {
+		return
+	}
+	fmt.Fprintf(a.stderr, "%s %s\n", a.palette.Info("[info]"), fmt.Sprintf(format, args...))
+}
+
+func (a *app) success(format string, args ...any) {
+	if a.quiet {
+		return
+	}
+	fmt.Fprintf(a.stderr, "%s %s\n", a.palette.Success("[ ok ]"), fmt.Sprintf(format, args...))
+}
+
+func (a *app) printError(err error) {
+	if err == nil {
+		return
+	}
+	fmt.Fprintf(a.stderr, "%s %s\n", a.palette.Error("[err ]"), err.Error())
+}
+
+// event emits a structured peer log line via logx.Event.
 func (a *app) event(event string, kv ...any) {
 	a.logger.Print(logx.Event("peer", event, kv...))
 }
@@ -537,10 +730,93 @@ func authFailureReason(err error) string {
 	}
 }
 
+// ---------- help and usage ----------
+
 func (a *app) printRootUsage() {
-	fmt.Fprintf(os.Stdout, "Usage:\n")
-	fmt.Fprintf(os.Stdout, "  rtc2tcp-peer expose --rendezvous-token <token> --pairing-secret-file <path> --target <host:port> [flags]\n")
-	fmt.Fprintf(os.Stdout, "  rtc2tcp-peer connect --rendezvous-token <token> --pairing-secret-file <path> [--listen 127.0.0.1:2222] [flags]\n\n")
-	fmt.Fprintf(os.Stdout, "Environment: %s, %s, %s\n\n", config.EnvRendezvousToken, config.EnvPairingSecret, config.EnvPairingSecretFile)
-	fmt.Fprintf(os.Stdout, "Flags are available per subcommand with --help.\n")
+	w := a.stderr
+	p := a.palette
+	fmt.Fprintln(w, p.Bold("Usage:"))
+	fmt.Fprintln(w, "  "+p.Cyan(toolName+" expose")+"  "+p.Muted("[--target HOST:PORT] [flags]"))
+	fmt.Fprintln(w, "  "+p.Cyan(toolName+" connect")+" "+p.Muted("[rtc2tcp://TOKEN:SECRET@HOST[:PORT]] [flags]"))
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, p.Bold("Subcommands:"))
+	fmt.Fprintln(w, "  "+p.Cyan("expose")+"    Expose a local TCP endpoint to a remote peer.")
+	fmt.Fprintln(w, "  "+p.Cyan("connect")+"   Forward a local TCP listener to a remote exposed service.")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, p.Bold("Global flags:"))
+	fmt.Fprintln(w, "  -q, --quiet, --silent    Suppress banner and informational output.")
+	fmt.Fprintln(w, "      --no-color           Disable ANSI colours in output.")
+	fmt.Fprintln(w, "  -V, --version            Print version and exit.")
+	fmt.Fprintln(w, "  -h, --help               Show this help.")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, p.Bold("Environment:"))
+	fmt.Fprintln(w, "  "+config.EnvRendezvousToken+"        Fallback for --rendezvous-token.")
+	fmt.Fprintln(w, "  "+config.EnvPairingSecret+"           Fallback for --pairing-secret.")
+	fmt.Fprintln(w, "  "+config.EnvPairingSecretFile+"      Fallback for --pairing-secret-file.")
+	fmt.Fprintln(w, "  NO_COLOR / FORCE_COLOR            Override colour detection.")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, p.Bold("Examples:"))
+	fmt.Fprintln(w, "  "+p.Muted("# Expose local SSH with auto-generated credentials:"))
+	fmt.Fprintln(w, "  "+toolName+" expose --target 127.0.0.1:22")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "  "+p.Muted("# Connect using the connection string printed by the expose side:"))
+	fmt.Fprintln(w, "  "+toolName+" connect rtc2tcp://TOKEN:SECRET@127.0.0.1:8080/")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "  "+p.Muted("# Explicit values from environment:"))
+	fmt.Fprintln(w, "  "+config.EnvRendezvousToken+"=lab-demo \\")
+	fmt.Fprintln(w, "  "+config.EnvPairingSecretFile+"=./pairing-secret.txt \\")
+	fmt.Fprintln(w, "  "+toolName+" connect --listen 127.0.0.1:2222")
+	fmt.Fprintln(w)
+}
+
+func (a *app) printSubcommandUsage(mode config.PeerMode) {
+	w := a.stderr
+	p := a.palette
+	switch mode {
+	case config.ModeExpose:
+		fmt.Fprintln(w, p.Bold("Usage: ")+p.Cyan(toolName+" expose")+p.Muted(" [flags]"))
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, p.Bold("Expose flags:"))
+		fmt.Fprintln(w, "  -T, --target       HOST:PORT      Local TCP endpoint to expose. (required)")
+		fmt.Fprintln(w)
+	case config.ModeConnect:
+		fmt.Fprintln(w, p.Bold("Usage: ")+p.Cyan(toolName+" connect")+p.Muted(" [rtc2tcp://TOKEN:SECRET@HOST[:PORT]] [flags]"))
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, p.Bold("Connect flags:"))
+		fmt.Fprintln(w, "  -l, --listen       HOST:PORT      Local TCP listen address. (default 127.0.0.1:2222)")
+		fmt.Fprintln(w, "      --connection   URL            rtc2tcp://… connection string (same as positional arg).")
+		fmt.Fprintln(w)
+	}
+	fmt.Fprintln(w, p.Bold("Rendezvous / auth:"))
+	fmt.Fprintln(w, "  -t, --rendezvous-token TOKEN      Broker-visible pairing token.")
+	fmt.Fprintln(w, "  -s, --pairing-secret   SECRET     Peer pairing secret (prefer --pairing-secret-file).")
+	fmt.Fprintln(w, "      --pairing-secret-file FILE    Read pairing secret from file.")
+	fmt.Fprintln(w, "  -b, --broker           URL        Broker URL (default http://127.0.0.1:8080).")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, p.Bold("Network:"))
+	fmt.Fprintln(w, "      --stun             URL        STUN server (empty to disable).")
+	fmt.Fprintln(w, "      --turn             URL        TURN server URL.")
+	fmt.Fprintln(w, "      --turn-username    NAME       TURN username.")
+	fmt.Fprintln(w, "      --turn-password    PASS       TURN password.")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, p.Bold("Global:"))
+	fmt.Fprintln(w, "  -q, --quiet, --silent             Suppress banner and informational output.")
+	fmt.Fprintln(w, "      --no-color                    Disable ANSI colours.")
+	fmt.Fprintln(w, "  -V, --version                     Print version and exit.")
+	fmt.Fprintln(w, "  -h, --help                        Show this help.")
+	fmt.Fprintln(w)
+}
+
+// peekBool scans raw argv for any of the listed bool-flag names (long
+// or short form). Used to suppress the banner and colour defaults
+// before the proper subcommand flag parser runs.
+func peekBool(args []string, names ...string) bool {
+	for _, a := range args {
+		for _, n := range names {
+			if a == "-"+n || a == "--"+n || a == "-"+n+"=true" || a == "--"+n+"=true" {
+				return true
+			}
+		}
+	}
+	return false
 }

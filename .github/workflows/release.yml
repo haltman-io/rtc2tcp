@@ -37,7 +37,7 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Build binaries
+      - name: Build and archive
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
@@ -47,19 +47,41 @@ jobs:
           set -euo pipefail
           VERSION="${GITHUB_REF_NAME}"
           COMMIT="$(git rev-parse --short HEAD)"
-          LDFLAGS="-s -w -X rtc2tcp/internal/config.Version=${VERSION} -X rtc2tcp/internal/config.Commit=${COMMIT}"
+          LDFLAGS="-s -w -X rtc2tcp/internal/config.Version=${VERSION#v} -X rtc2tcp/internal/config.Commit=${COMMIT}"
+
+          pkg="rtc2tcp-${VERSION}-${GOOS}-${GOARCH}"
+          mkdir -p "build/${pkg}" dist
+
           EXT=""
           if [ "${GOOS}" = "windows" ]; then EXT=".exe"; fi
-          mkdir -p dist
+
           for cmd in rtc2tcp-broker rtc2tcp-peer; do
-            out="dist/${cmd}-${VERSION}-${GOOS}-${GOARCH}${EXT}"
-            go build -trimpath -ldflags "${LDFLAGS}" -o "${out}" "./cmd/${cmd}"
+            go build -trimpath -ldflags "${LDFLAGS}" -o "build/${pkg}/${cmd}${EXT}" "./cmd/${cmd}"
           done
+
+          # Each archive ships with README, SECURITY, PROTOCOL, CHANGELOG
+          # and this file so an operator who downloaded a single tar.gz
+          # has everything they need without cloning the repo.
+          cp README.md SECURITY.md PROTOCOL.md CHANGELOG.md "build/${pkg}/"
+
+          cd build
+          if [ "${GOOS}" = "windows" ]; then
+            archive="${pkg}.zip"
+            (cd "${pkg}" && zip -q -r "../../dist/${archive}" .)
+          else
+            archive="${pkg}.tar.gz"
+            tar -czf "../dist/${archive}" "${pkg}"
+          fi
+          cd ..
+
+          # Per-archive checksum file so users can verify a single
+          # download without downloading the whole SHA256SUMS.
+          ( cd dist && sha256sum "${archive}" > "${archive}.sha256" )
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: binaries-${{ matrix.goos }}-${{ matrix.goarch }}
+          name: pkg-${{ matrix.goos }}-${{ matrix.goarch }}
           path: dist/
           if-no-files-found: error
           retention-days: 7
@@ -78,12 +100,16 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Generate SHA256SUMS
+      - name: Generate aggregate SHA256SUMS
         shell: bash
         run: |
           set -euo pipefail
           cd dist
-          sha256sum * > SHA256SUMS
+          # Exclude per-archive .sha256 files from the aggregate manifest
+          # so the manifest is self-contained and does not reference
+          # other signature files.
+          find . -maxdepth 1 -type f ! -name '*.sha256' ! -name 'SHA256SUMS*' -printf '%f\n' | \
+            sort | xargs -I{} sha256sum "{}" > SHA256SUMS
           echo "--- SHA256SUMS ---"
           cat SHA256SUMS
 

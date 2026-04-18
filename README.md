@@ -1,8 +1,47 @@
 # rtc2tcp
 
+```
+      _       ____     _
+ _ __| |_ ___|___ \ __| |_ ___ _ __
+| '__| __/ __| __) / _` __/ __| '_ \
+| |  | || (__ / __/ (_| || (__| |_) |
+|_|   \__\___|_____\__,_\__\___| .__/
+                               |_|
+```
+
 `rtc2tcp` tunnels one TCP endpoint over an end-to-end encrypted WebRTC DataChannel. A broker is used for rendezvous and signaling only; it is not in the payload path.
 
-This repository is on a security-hardening track. Milestone 1 protocol hardening and Milestone 2 peer authentication are implemented. Peer authentication is a balanced CPACE-Ristretto255 PAKE; the primitive is sourced from `github.com/cloudflare/circl`. The project implementation itself has not yet had an external security review — Milestone 3 scopes that work.
+Developed by [haltman.io](https://haltman.io/) · source at [github.com/haltman-io/rtc2tcp](https://github.com/haltman-io/rtc2tcp).
+
+Milestone 1 protocol hardening and Milestone 2 peer authentication are implemented. Peer authentication is a balanced CPACE-Ristretto255 PAKE sourced from `github.com/cloudflare/circl`. The project implementation itself has not yet had an external security review — Milestone 3 scopes that work.
+
+## Quick Start
+
+One-liner: auto-generate secrets, expose local SSH, copy the printed command, paste on the other machine.
+
+```
+$ rtc2tcp-peer expose --target 127.0.0.1:22
+
+Session credentials
+  rendezvous token: jloh_XmGgi1HgUC3LWY7HA
+  pairing secret  : N5mtwubpUlru9fyuOkf1Iw
+  broker          : http://127.0.0.1:8080
+  target          : 127.0.0.1:22
+
+Run this on the connecting machine:
+  rtc2tcp-peer connect rtc2tcp://jloh_XmGgi1HgUC3LWY7HA:N5mtwubpUlru9fyuOkf1Iw@127.0.0.1:8080
+
+Keep this terminal open; closing it ends the tunnel.
+```
+
+On the other machine:
+
+```
+$ rtc2tcp-peer connect rtc2tcp://jloh_XmGgi1HgUC3LWY7HA:N5mtwubpUlru9fyuOkf1Iw@127.0.0.1:8080
+$ ssh -p 2222 user@localhost
+```
+
+That is the whole thing. The broker must be reachable by both peers; run one yourself with `rtc2tcp-broker --listen :8080`, or point `--broker` at a shared instance.
 
 ## Binaries
 
@@ -104,49 +143,59 @@ Release artifacts (per-platform binaries, `SHA256SUMS`, cosign signature + certi
 
 ## Local Run
 
-Create a secret file once:
-
-```bash
-printf "lab-secret\n" > pairing-secret.txt
-```
-
-Start the broker:
+Start the broker in one terminal:
 
 ```bash
 go run ./cmd/rtc2tcp-broker --listen :8080
 ```
 
-Run the expose side:
+In a second terminal, expose a target. Credentials are auto-generated unless you pass them explicitly:
 
 ```bash
-go run ./cmd/rtc2tcp-peer expose \
-  --rendezvous-token lab-demo \
-  --pairing-secret-file pairing-secret.txt \
-  --broker http://127.0.0.1:8080 \
-  --target 127.0.0.1:22
+go run ./cmd/rtc2tcp-peer expose --target 127.0.0.1:22
 ```
 
-Run the connect side:
+The expose side prints a `rtc2tcp-peer connect rtc2tcp://…` command. Paste it on the third terminal (or a different machine reachable by the same broker):
 
 ```bash
-go run ./cmd/rtc2tcp-peer connect \
-  --rendezvous-token lab-demo \
-  --pairing-secret-file pairing-secret.txt \
-  --broker http://127.0.0.1:8080 \
-  --listen 127.0.0.1:2222
+go run ./cmd/rtc2tcp-peer connect rtc2tcp://<token>:<secret>@127.0.0.1:8080
+ssh -p 2222 user@localhost
 ```
 
-Environment variables are also supported:
+## Pinning Credentials
+
+For long-lived setups or operator-supplied secrets, skip auto-generation and pin values explicitly. Use a file or environment variable rather than a command-line flag so the pairing secret does not land in shell history:
 
 ```bash
 export RTC2TCP_RENDEZVOUS_TOKEN=lab-demo
 export RTC2TCP_PAIRING_SECRET_FILE=pairing-secret.txt
+
+rtc2tcp-peer expose  --target 127.0.0.1:22
+rtc2tcp-peer connect --listen 127.0.0.1:2222
 ```
 
-## SSH Example
+Short flags are available for every long option: `-t/--rendezvous-token`, `-s/--pairing-secret`, `-b/--broker`, `-T/--target`, `-l/--listen`, `-q/--quiet`, `-V/--version`.
+
+## Flags Cheat Sheet
+
+| Global                                         | Effect                                            |
+| ---------------------------------------------- | ------------------------------------------------- |
+| `-q`, `--quiet`, `--silent`                    | Suppress the banner and informational chatter.   |
+| `--no-color`                                   | Disable ANSI colours (also respects `NO_COLOR`). |
+| `-V`, `--version`                              | Print version and exit.                          |
+| `-h`, `--help`                                 | Show help.                                        |
+
+## Install
+
+### Pre-built binaries
+
+Grab a release from [github.com/haltman-io/rtc2tcp/releases](https://github.com/haltman-io/rtc2tcp/releases). Each tag publishes signed binaries for `linux/{amd64,arm64}`, `darwin/{amd64,arm64}`, and `windows/amd64`, packaged as `.tar.gz` / `.zip` with a `SHA256SUMS` manifest and a cosign signature. Verification recipe is in [SECURITY.md](SECURITY.md).
+
+### From source
 
 ```bash
-ssh -p 2222 localhost
+go install github.com/haltman-io/rtc2tcp/cmd/rtc2tcp-peer@latest
+go install github.com/haltman-io/rtc2tcp/cmd/rtc2tcp-broker@latest
 ```
 
 ## TURN

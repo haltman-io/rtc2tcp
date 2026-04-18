@@ -4,6 +4,15 @@ All notable protocol, security, and public-interface changes to rtc2tcp are reco
 
 ## [Unreleased]
 
+### Added (UX)
+- Branded startup banner with version/commit stamp and attribution (`haltman.io`, source URL). Suppressible via `-q`/`--quiet`/`--silent`; colour disabled on non-TTY, `NO_COLOR`, or `--no-color`.
+- `rtc2tcp://TOKEN:SECRET@HOST[:PORT]` connection-string format. `rtc2tcp-peer expose` auto-generates a 128-bit rendezvous token and a 128-bit pairing secret when the operator does not provide them, and prints the exact `rtc2tcp-peer connect rtc2tcp://…` command the remote peer should run. `connect` accepts the connection string as a positional argument or via `--connection`.
+- Short aliases for every major flag: `-t`/`--rendezvous-token`, `-s`/`--pairing-secret`, `-b`/`--broker`, `-T`/`--target`, `-l`/`--listen`, `-q`/`--quiet`, `-V`/`--version`.
+- Pretty, coloured help menu on both binaries.
+
+### Added (release)
+- Release workflow now produces per-platform archives (`.tar.gz` on Unix, `.zip` on Windows) that bundle the two binaries alongside `README.md`, `SECURITY.md`, `PROTOCOL.md`, and `CHANGELOG.md`. Each archive ships with its own `.sha256` file in addition to the aggregate `SHA256SUMS` that cosign signs.
+
 ### Changed (security-critical)
 - Peer authentication is now a balanced CPACE-Ristretto255 PAKE, sourced from `github.com/cloudflare/circl/group`. The default scheme identifier is `rtc2tcp-auth/cpace-ristretto255-v2`. The previous transitional ECDH scheme (`rtc2tcp-auth/interactive-ecdh-v2a`) is retained compiled in for rollout compatibility and refused structurally by CPACE-configured peers via the wire-level scheme-pin check.
 - The broker now sees the pairing secret only through its effect on session timing; the secret is no longer committed to the broker via any hash derivation. The rendezvous token is operator-supplied and independent of the pairing secret.

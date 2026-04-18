@@ -119,12 +119,14 @@
 
 ## Next Action
 
-Blocking items are all non-code:
+Blocking items are non-code:
 
-1. Procure the external security review. The audit envelope is clean: protocol spec + implementation-map table, transcript/key-schedule byte-pins, state-machine unit tests, adversarial fuzz corpus, structured logs, reproducible build, signed release artifacts, ADR explaining scheme choice. Scope the brief as `internal/auth/*`, `internal/webrtc/session.go` control-channel wire-up, and the broker signaling surface — primitive correctness (`github.com/cloudflare/circl/group`) is relied on upstream.
-2. Build a TURN-path throughput harness (local coturn or equivalent, docker-composed) so the paper's evaluation section has reproducible numbers.
+1. Procure the external security review. Audit envelope is tight: protocol spec + implementation-map table, transcript/key-schedule byte-pins, state-machine unit tests, adversarial fuzz corpus, structured logs, reproducible build, signed release artifacts, ADR. Scope the brief as `internal/auth/*`, `internal/webrtc/session.go` control-channel wire-up, and the broker signaling surface.
+2. TURN-path throughput harness (local coturn, docker-composed) so the paper's evaluation has reproducible numbers.
 
-Deferred-not-needed: per-token broker rate limit (current per-IP lever is sufficient for single-tenant lab deployments; revisit if abuse patterns warrant).
+UX follow-ups (code, optional): add a `CHANGELOG.md` "Unreleased" entry covering the productionization turn once the first tagged release is cut; capture a screen recording for README asciinema; add `internal/banner` and `internal/color` unit tests if maintenance ramps up (current correctness is validated end-to-end by invoking the built binary).
+
+Deferred-not-needed: per-token broker rate limit.
 
 ## Change Log
 
@@ -143,3 +145,4 @@ Deferred-not-needed: per-token broker rate limit (current per-IP lever is suffic
 - [x] 2026-04-18: Release hardening block — `Makefile` with reproducible `-trimpath`/`-ldflags`/CGO=0 build targets; `.github/workflows/release.yml` cross-compiles 5 platforms on `v*` tags, generates `SHA256SUMS`, signs keyless via Sigstore cosign, and uploads to a GitHub Release; `SECURITY.md` added with private reporting, scope, disclosure timeline, safe-harbour, and the cosign verification recipe; README build section now shows the reproducible recipe and links to `SECURITY.md`.
 - [x] 2026-04-18: Structured-log block — new `internal/logx.Event(prefix, event, kv...)` formatter unit-tested for quoting/escaping/ordering; broker, peer, session, and tunnel bridge now emit `<prefix>: event=<name> k=v ...` lines with `session_id` / `peer_id` / `rendezvous_token` / `source_ip` fields leading every session-scoped line. Structural downgrade-refusal assertion added to the peer: `authenticator.Name() == auth.SchemeCPACEV2` must hold at startup.
 - [x] 2026-04-18: Audit-prep doc block — `docs/authenticator-design.md` ADR records the scheme-choice rationale; `PROTOCOL.md` gets an Implementation Map table cross-referencing every normative section to the enforcing code symbol; `internal/auth/auth_bench_test.go` adds handshake microbenchmarks (full CPACE ~6.7 ms/op, transitional ~7.0 ms/op, `buildTranscript` ~0.5 µs, `Message` marshal ~0.3 µs on a Ryzen 7 5800X); `paper/OUTLINE.md` seeds the technical-paper structure and explicitly defers drafting until external audit input is in.
+- [x] 2026-04-18: Productionization turn — ASCII banner + version/commit stamp + haltman.io/github attribution (suppressible via `-q`/`--quiet`/`--silent`); `internal/color` ANSI palette with `NO_COLOR`/`FORCE_COLOR`/`--no-color`/TTY detection; `internal/banner` renderer; `internal/config.ConnectionString` (`rtc2tcp://TOKEN:SECRET@HOST[:PORT]`) parser + formatter + crypto-random token/secret generator; peer CLI rewired to auto-generate credentials on expose and print the exact `connect rtc2tcp://…` command; positional connection-string support on `connect`; short aliases for every major flag (`-t`/`-s`/`-b`/`-T`/`-l`/`-q`/`-V`); pretty help menu with colour sections; broker also ships the banner. Release workflow enhanced to produce `.tar.gz`/`.zip` archives per platform (bundled with README/SECURITY/PROTOCOL/CHANGELOG), per-archive `.sha256`, aggregate `SHA256SUMS`, and cosign signature. README rewritten around the one-liner UX.

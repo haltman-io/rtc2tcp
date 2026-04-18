@@ -14,16 +14,40 @@ const (
 )
 
 func ResolveRendezvousToken(flagValue string) (string, error) {
-	if value := strings.TrimSpace(flagValue); value != "" {
-		return value, nil
-	}
-	if value := strings.TrimSpace(os.Getenv(EnvRendezvousToken)); value != "" {
-		return value, nil
+	if v := ResolveRendezvousTokenOptional(flagValue); v != "" {
+		return v, nil
 	}
 	return "", fmt.Errorf("rendezvous token is required via --rendezvous-token or %s", EnvRendezvousToken)
 }
 
+// ResolveRendezvousTokenOptional returns the first non-empty source
+// among the explicit flag value and EnvRendezvousToken. Returns ""
+// when nothing is set, instead of erroring. Callers that support
+// auto-generation use this form.
+func ResolveRendezvousTokenOptional(flagValue string) string {
+	if value := strings.TrimSpace(flagValue); value != "" {
+		return value
+	}
+	return strings.TrimSpace(os.Getenv(EnvRendezvousToken))
+}
+
 func ResolvePairingSecret(pairingSecret, pairingSecretFile, legacySecret, legacySecretFile string) (string, error) {
+	secret, err := ResolvePairingSecretOptional(pairingSecret, pairingSecretFile, legacySecret, legacySecretFile)
+	if err != nil {
+		return "", err
+	}
+	if secret == "" {
+		return "", fmt.Errorf("pairing secret is required via --pairing-secret-file, --pairing-secret, or %s/%s", EnvPairingSecretFile, EnvPairingSecret)
+	}
+	return secret, nil
+}
+
+// ResolvePairingSecretOptional mirrors ResolvePairingSecret but returns
+// an empty string (no error) when no source is provided. Callers that
+// support auto-generation use this form. Multiple conflicting sources
+// still produce an error, since that is a configuration bug regardless
+// of whether auto-generation is on the table.
+func ResolvePairingSecretOptional(pairingSecret, pairingSecretFile, legacySecret, legacySecretFile string) (string, error) {
 	explicitSources := countNonEmpty(pairingSecret, pairingSecretFile, legacySecret, legacySecretFile)
 	if explicitSources > 1 {
 		return "", errors.New("use only one explicit pairing secret source")
@@ -59,7 +83,7 @@ func ResolvePairingSecret(pairingSecret, pairingSecretFile, legacySecret, legacy
 		}
 	}
 
-	return "", fmt.Errorf("pairing secret is required via --pairing-secret-file, --pairing-secret, or %s/%s", EnvPairingSecretFile, EnvPairingSecret)
+	return "", nil
 }
 
 func readSecretFile(path string) (string, error) {
