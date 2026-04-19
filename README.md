@@ -78,8 +78,29 @@ That's the whole thing. The tunnel is end-to-end encrypted; the broker cannot re
 | Reach an internal HTTP admin panel    | `rtc2tcp-peer expose -T 10.0.0.5:8080`              | `rtc2tcp-peer connect <url> -l 127.0.0.1:8080` → `http://localhost:8080`   |
 | Access a Postgres / MySQL inside a VPC | `rtc2tcp-peer expose -T 10.0.0.12:5432`             | `rtc2tcp-peer connect <url> -l 127.0.0.1:5432` → `psql -h localhost`       |
 | RDP to a Windows host                 | `rtc2tcp-peer expose -T 127.0.0.1:3389`             | `rtc2tcp-peer connect <url> -l 127.0.0.1:3389`                             |
+| Dynamic SOCKS5 proxy                  | `rtc2tcp-peer expose --socks5`                      | `rtc2tcp-peer connect <url> --socks5 -l 127.0.0.1:1080` → `curl -x socks5h://127.0.0.1:1080 …` |
 
 Pin credentials instead of generating them each run — [docs/pinning-credentials.md](docs/pinning-credentials.md).
+
+---
+
+## SOCKS5 proxy mode
+
+Both peers pass `--socks5` to turn the tunnel into a dynamic proxy. No `--target` is required on the expose side — each SOCKS5 `CONNECT` request opens a new multiplexed DataChannel and the expose peer dials the requested host.
+
+```console
+# expose side
+$ rtc2tcp-peer expose --socks5
+
+# connect side
+$ rtc2tcp-peer connect rtc2tcp://… --socks5 --listen 127.0.0.1:1080
+
+# any SOCKS5-aware client works
+$ curl -x socks5h://127.0.0.1:1080 http://ifconfig.me
+$ ssh -o ProxyCommand="nc -X 5 -x 127.0.0.1:1080 %h %p" user@targethost
+```
+
+Multiple connections are served concurrently over the same WebRTC session, one DataChannel per stream.
 
 ---
 

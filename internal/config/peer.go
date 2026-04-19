@@ -54,6 +54,12 @@ type PeerOptions struct {
 	ICE             ICEConfig
 	Target          string
 	Listen          string
+	// SOCKS5 switches the tunnel into proxy mode. On the expose side the
+	// target is resolved per-stream from the connect peer's channel label
+	// instead of a fixed --target flag. On the connect side the --listen
+	// address accepts SOCKS5 CONNECT requests, so any TCP client that
+	// speaks SOCKS5 can route traffic without a separate tunnel per host.
+	SOCKS5 bool
 }
 
 func (o PeerOptions) Validate() error {
@@ -69,11 +75,13 @@ func (o PeerOptions) Validate() error {
 
 	switch o.Mode {
 	case ModeExpose:
-		if strings.TrimSpace(o.Target) == "" {
-			return errors.New("target is required in expose mode")
-		}
-		if _, err := ValidateAddress(o.Target, AddressRoleTarget); err != nil {
-			return fmt.Errorf("invalid target: %w", err)
+		if !o.SOCKS5 {
+			if strings.TrimSpace(o.Target) == "" {
+				return errors.New("target is required in expose mode (or use --socks5)")
+			}
+			if _, err := ValidateAddress(o.Target, AddressRoleTarget); err != nil {
+				return fmt.Errorf("invalid target: %w", err)
+			}
 		}
 	case ModeConnect:
 		if strings.TrimSpace(o.Listen) == "" {

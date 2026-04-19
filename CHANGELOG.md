@@ -5,6 +5,7 @@ All notable protocol, security, and public-interface changes to rtc2tcp are reco
 ## [Unreleased]
 
 ### Added (UX)
+- `--socks5` flag on `rtc2tcp-peer expose` and `rtc2tcp-peer connect`. When both peers set this flag the tunnel becomes a dynamic SOCKS5 proxy: the connect-side listener accepts SOCKS5 `CONNECT` requests (RFC 1928, no-auth, IPv4 / IPv6 / FQDN), opens a multiplexed DataChannel per connection with the target encoded in the channel label, and the expose peer dials the requested host. Multiple connections are served concurrently over the same WebRTC session. No `--target` is required on the expose side.
 - Branded startup banner with version/commit stamp and attribution (`haltman.io`, source URL). Suppressible via `-q`/`--quiet`/`--silent`; colour disabled on non-TTY, `NO_COLOR`, or `--no-color`.
 - `rtc2tcp://TOKEN:SECRET@HOST[:PORT]` connection-string format. `rtc2tcp-peer expose` auto-generates a 128-bit rendezvous token and a 128-bit pairing secret when the operator does not provide them, and prints the exact `rtc2tcp-peer connect rtc2tcp://…` command the remote peer should run. `connect` accepts the connection string as a positional argument or via `--connection`.
 - Short aliases for every major flag: `-t`/`--rendezvous-token`, `-s`/`--pairing-secret`, `-b`/`--broker`, `-T`/`--target`, `-l`/`--listen`, `-q`/`--quiet`, `-V`/`--version`.
