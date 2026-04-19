@@ -8,7 +8,8 @@
 
 | Flag              | Short | Required | Default | Effect                                                                           |
 | ----------------- | ----- | -------- | ------- | -------------------------------------------------------------------------------- |
-| `--target HOST:PORT` | `-T` | yes      |         | Local TCP endpoint to share (e.g. `127.0.0.1:22`).                               |
+| `--target HOST:PORT` | `-T` | unless `--socks5` | | Local TCP endpoint to share (e.g. `127.0.0.1:22`).                    |
+| `--socks5`           |       |          |         | Dynamic proxy mode. Target is resolved per-stream from each SOCKS5 `CONNECT` request. Omit `--target` when this flag is set. Both peers must use `--socks5`. |
 
 ### Listener (connect only)
 
@@ -16,6 +17,7 @@
 | ----------------- | ----- | ----------------- | ----------------------------------------------------------------------- |
 | `--listen HOST:PORT` | `-l` | `127.0.0.1:2222` | Local TCP address where the remote target surfaces.                     |
 | `--connection URL`   |       |                   | `rtc2tcp://…` connection string (equivalent to the positional arg).     |
+| `--socks5`           |       |                   | Dynamic proxy mode. The local listener accepts SOCKS5 `CONNECT` requests. Both peers must use `--socks5`. |
 
 ### Rendezvous / auth
 

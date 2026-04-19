@@ -475,6 +475,19 @@ func (a *app) handleExposeStream(target string, socks5Mode bool, dc *pion.DataCh
 				_ = dc.Close()
 				return
 			}
+			// In SOCKS5 mode the connect peer is waiting for a ready
+			// signal before it sends the SOCKS5 success reply to the
+			// client. Send the signal now so dc.OnMessage (set by
+			// Bridge below) is registered before the client's first
+			// bytes arrive on the channel.
+			if socks5Mode {
+				if sendErr := dc.Send([]byte{0x01}); sendErr != nil {
+					a.event("socks5_ready_signal_failed", "label", dc.Label(), "err", sendErr.Error())
+					_ = conn.Close()
+					_ = dc.Close()
+					return
+				}
+			}
 			tunnel.Bridge(a.logger, dc, conn)
 		}()
 	})
@@ -608,15 +621,38 @@ func (a *app) handleSOCKS5Connect(conn net.Conn, session *rtcwebrtc.Session, cou
 
 	a.event("socks5_connecting", "stream", label, "target", target)
 	dc.OnOpen(func() {
-		// Inform the SOCKS5 client that the connection is live before
-		// starting the bridge. The expose peer has not yet dialed the
-		// target at this point, but the channel is open end-to-end.
-		if err := socks5.ReplySuccess(conn); err != nil {
-			_ = conn.Close()
-			_ = dc.Close()
-			return
-		}
-		tunnel.Bridge(a.logger, dc, conn)
+		// The expose peer dials the target asynchronously and only
+		// calls dc.Send (the ready signal) after Bridge is set up on
+		// its side. Register a temporary OnMessage handler that waits
+		// for that signal so we do not send the SOCKS5 success reply
+		// before the expose side has registered its dc.OnMessage.
+		// Without this, the client's first HTTP bytes arrive on the
+		// channel before pion has a handler and are silently dropped.
+		readyCh := make(chan struct{}, 1)
+		dc.OnMessage(func(_ pion.DataChannelMessage) {
+			select {
+			case readyCh <- struct{}{}:
+			default:
+			}
+		})
+		go func() {
+			select {
+			case <-readyCh:
+			case <-time.After(15 * time.Second):
+				a.event("socks5_ready_timeout", "stream", label, "target", target)
+				_ = conn.Close()
+				_ = dc.Close()
+				return
+			}
+			// Bridge first: overwrites the temporary OnMessage handler
+			// with the real one before the client gets the success reply
+			// and starts sending data.
+			tunnel.Bridge(a.logger, dc, conn)
+			if err := socks5.ReplySuccess(conn); err != nil {
+				_ = conn.Close()
+				_ = dc.Close()
+			}
+		}()
 	})
 }
 
