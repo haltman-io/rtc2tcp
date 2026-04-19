@@ -255,8 +255,14 @@ func (a *app) runPeer(options config.PeerOptions) error {
 			return nil
 		case err := <-authResultCh:
 			if err != nil {
-				a.logAuthFailure(options.Mode, authenticator.Name(), err)
-				a.printError(fmt.Errorf("authentication failed: %w", err))
+				failure := classifyPreAuthFailure(err)
+				switch failure.event {
+				case "transport_failure":
+					a.logTransportFailure(options.Mode, err)
+				default:
+					a.logAuthFailure(options.Mode, authenticator.Name(), err)
+				}
+				a.printError(fmt.Errorf("%s: %w", failure.message, err))
 				if session != nil {
 					_ = session.Fail(fmt.Errorf("authentication did not complete: %w", err))
 				}
@@ -929,6 +935,47 @@ func (a *app) logAuthFailure(mode config.PeerMode, scheme string, err error) {
 	)
 }
 
+func (a *app) logTransportFailure(mode config.PeerMode, err error) {
+	a.event("transport_failure",
+		"mode", mode,
+		"reason", transportFailureReason(err),
+		"detail", err.Error(),
+	)
+}
+
+type preAuthFailure struct {
+	event   string
+	message string
+}
+
+func classifyPreAuthFailure(err error) preAuthFailure {
+	if isPreAuthTransportFailure(err) {
+		return preAuthFailure{
+			event:   "transport_failure",
+			message: "transport failed before authentication",
+		}
+	}
+	return preAuthFailure{
+		event:   "auth_failure",
+		message: "authentication failed",
+	}
+}
+
+func isPreAuthTransportFailure(err error) bool {
+	switch {
+	case errors.Is(err, rtcwebrtc.ErrPeerConnectionFailed):
+		return true
+	case errors.Is(err, rtcwebrtc.ErrPeerConnectionClosed):
+		return true
+	case errors.Is(err, rtcwebrtc.ErrControlChannelClosed):
+		return true
+	case errors.Is(err, rtcwebrtc.ErrSessionClosed):
+		return true
+	default:
+		return false
+	}
+}
+
 func authFailureReason(err error) string {
 	switch {
 	case errors.Is(err, auth.ErrAuthSchemeMismatch):
@@ -949,6 +996,21 @@ func authFailureReason(err error) string {
 		return "timeout"
 	case errors.Is(err, context.Canceled):
 		return "canceled"
+	default:
+		return "unclassified"
+	}
+}
+
+func transportFailureReason(err error) string {
+	switch {
+	case errors.Is(err, rtcwebrtc.ErrPeerConnectionFailed):
+		return "peer_connection_failed"
+	case errors.Is(err, rtcwebrtc.ErrPeerConnectionClosed):
+		return "peer_connection_closed"
+	case errors.Is(err, rtcwebrtc.ErrControlChannelClosed):
+		return "control_channel_closed"
+	case errors.Is(err, rtcwebrtc.ErrSessionClosed):
+		return "session_closed"
 	default:
 		return "unclassified"
 	}

@@ -26,6 +26,9 @@ var (
 	ErrUnexpectedAuthControlReplay = errors.New("unexpected replay-like auth control message")
 	ErrUnexpectedInboundStream     = errors.New("unexpected inbound payload datachannel")
 	ErrSessionClosed               = errors.New("session closed")
+	ErrPeerConnectionFailed        = errors.New("peer connection failed")
+	ErrPeerConnectionClosed        = errors.New("peer connection closed")
+	ErrControlChannelClosed        = errors.New("control channel closed")
 	errAuthMaterialNotReady        = errors.New("session binding material not ready")
 )
 
@@ -129,9 +132,9 @@ func NewSession(cfg Config) (*Session, error) {
 		}
 		switch state {
 		case pion.PeerConnectionStateFailed:
-			s.fail(fmt.Errorf("peer connection failed"))
+			s.fail(ErrPeerConnectionFailed)
 		case pion.PeerConnectionStateClosed:
-			s.fail(fmt.Errorf("peer connection closed"))
+			s.fail(ErrPeerConnectionClosed)
 		}
 	})
 
@@ -324,7 +327,7 @@ func (s *Session) attachControlChannel(dc *pion.DataChannel) {
 		if s.stateMachine.IsOneOf(StateClosing, StateClosed, StateFailed) {
 			return
 		}
-		s.fail(errors.New("control channel closed"))
+		s.fail(ErrControlChannelClosed)
 	})
 }
 
