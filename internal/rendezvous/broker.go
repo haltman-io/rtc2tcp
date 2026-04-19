@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -52,22 +53,29 @@ const (
 	DefaultLimiterIdleTTL = 1 * time.Hour
 )
 
-// Keepalive tunables. Declared as vars (not consts) so tests can drive
-// real time fast without refactoring the API. Production code should
-// not mutate these after NewBroker.
+// Keepalive tunables. Stored atomically so tests can drive real time
+// fast without racing against the keepalive goroutines. Production
+// code should not mutate these after NewBroker.
+//
+// Why atomic: tests mutate these between cases while goroutines from
+// previous cases may still be winding down. Under -race, even a write
+// after a finished goroutine's read flags a race without a happens-
+// before edge. atomic.Int64 provides that edge.
 var (
-	// wsPingInterval is how often the broker sends a ping frame to
-	// each connected peer. Short enough to keep reverse proxies
-	// (Cloudflare Tunnel, nginx, AWS ALB) from idling-out the
-	// WebSocket while the WebRTC DataChannel is carrying the payload.
-	wsPingInterval = 20 * time.Second
-	// wsPongWait bounds how long the broker's read side will wait for
-	// any frame (application message, pong, ping) before considering
-	// the peer dead. Must be > 2 × wsPingInterval.
-	wsPongWait = 60 * time.Second
-	// wsWriteWait bounds a single WriteControl call (ping).
-	wsWriteWait = 10 * time.Second
+	wsPingIntervalNS atomic.Int64
+	wsPongWaitNS     atomic.Int64
+	wsWriteWaitNS    atomic.Int64
 )
+
+func init() {
+	wsPingIntervalNS.Store(int64(20 * time.Second))
+	wsPongWaitNS.Store(int64(60 * time.Second))
+	wsWriteWaitNS.Store(int64(10 * time.Second))
+}
+
+func wsPingInterval() time.Duration { return time.Duration(wsPingIntervalNS.Load()) }
+func wsPongWait() time.Duration     { return time.Duration(wsPongWaitNS.Load()) }
+func wsWriteWait() time.Duration    { return time.Duration(wsWriteWaitNS.Load()) }
 
 type Broker struct {
 	logger   *log.Logger
@@ -267,9 +275,9 @@ func (b *Broker) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// refreshes the deadline via the pong handler / post-read refresh
 	// below. Must happen AFTER registerPeer has cleared the
 	// initialReadTimeout it installed for the register handshake.
-	_ = conn.SetReadDeadline(time.Now().Add(wsPongWait))
+	_ = conn.SetReadDeadline(time.Now().Add(wsPongWait()))
 	conn.SetPongHandler(func(string) error {
-		return conn.SetReadDeadline(time.Now().Add(wsPongWait))
+		return conn.SetReadDeadline(time.Now().Add(wsPongWait()))
 	})
 	pingDone := make(chan struct{})
 	defer close(pingDone)
@@ -319,7 +327,7 @@ func (b *Broker) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		// Any inbound application frame refreshes the read deadline —
 		// the pong handler already does this for pongs, but a steady
 		// stream of signals during ICE should also count as liveness.
-		_ = conn.SetReadDeadline(time.Now().Add(wsPongWait))
+		_ = conn.SetReadDeadline(time.Now().Add(wsPongWait()))
 
 		switch message.Type {
 		case signaling.MessageTypePing:
@@ -783,7 +791,7 @@ func canonicalHost(host, port string) string {
 // or on the first write failure. Runs one goroutine per connected
 // peer; cheap compared to the session it protects.
 func (b *Broker) runPeerKeepalive(p *peer, done <-chan struct{}) {
-	ticker := time.NewTicker(wsPingInterval)
+	ticker := time.NewTicker(wsPingInterval())
 	defer ticker.Stop()
 	for {
 		select {
@@ -794,7 +802,7 @@ func (b *Broker) runPeerKeepalive(p *peer, done <-chan struct{}) {
 			err := p.conn.WriteControl(
 				websocket.PingMessage,
 				nil,
-				time.Now().Add(wsWriteWait),
+				time.Now().Add(wsWriteWait()),
 			)
 			p.writeMu.Unlock()
 			if err != nil {

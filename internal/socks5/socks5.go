@@ -16,8 +16,8 @@ const (
 
 	cmdConnect = 0x01
 
-	authNone      = 0x00
-	authNoAccept  = 0xFF
+	authNone     = 0x00
+	authNoAccept = 0xFF
 
 	addrTypeIPv4 = 0x01
 	addrTypeFQDN = 0x03

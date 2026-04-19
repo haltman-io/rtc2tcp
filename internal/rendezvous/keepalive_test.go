@@ -41,13 +41,13 @@ func dialRaw(t *testing.T, wsURL string) *websocket.Conn {
 // what the test proves.
 func TestBrokerPingsPeersDuringIdle(t *testing.T) {
 	// Drive broker keepalives fast for the test. The broker package
-	// declares these as vars for exactly this purpose.
-	origPing, origPong := wsPingInterval, wsPongWait
-	wsPingInterval = 100 * time.Millisecond
-	wsPongWait = 10 * time.Second
+	// stores these atomically for exactly this purpose.
+	origPing, origPong := wsPingIntervalNS.Load(), wsPongWaitNS.Load()
+	wsPingIntervalNS.Store(int64(100 * time.Millisecond))
+	wsPongWaitNS.Store(int64(10 * time.Second))
 	t.Cleanup(func() {
-		wsPingInterval = origPing
-		wsPongWait = origPong
+		wsPingIntervalNS.Store(origPing)
+		wsPongWaitNS.Store(origPong)
 	})
 
 	broker := NewBroker(log.New(io.Discard, "", 0))
@@ -182,12 +182,12 @@ func TestBrokerRepliesToAppLevelPing(t *testing.T) {
 // peer stops responding to pings entirely (e.g. blackholed path). The
 // broker should cut the connection rather than leaking goroutines.
 func TestBrokerEvictsSilentPeer(t *testing.T) {
-	origPing, origPong := wsPingInterval, wsPongWait
-	wsPingInterval = 100 * time.Millisecond
-	wsPongWait = 500 * time.Millisecond
+	origPing, origPong := wsPingIntervalNS.Load(), wsPongWaitNS.Load()
+	wsPingIntervalNS.Store(int64(100 * time.Millisecond))
+	wsPongWaitNS.Store(int64(500 * time.Millisecond))
 	t.Cleanup(func() {
-		wsPingInterval = origPing
-		wsPongWait = origPong
+		wsPingIntervalNS.Store(origPing)
+		wsPongWaitNS.Store(origPong)
 	})
 
 	broker := NewBroker(log.New(io.Discard, "", 0))
