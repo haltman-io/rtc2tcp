@@ -25,6 +25,7 @@ import (
 	"github.com/haltman-io/rtc2tcp/internal/logx"
 	"github.com/haltman-io/rtc2tcp/internal/rendezvous"
 	"github.com/haltman-io/rtc2tcp/internal/signaling"
+	"github.com/haltman-io/rtc2tcp/internal/socks5"
 	"github.com/haltman-io/rtc2tcp/internal/tunnel"
 	rtcwebrtc "github.com/haltman-io/rtc2tcp/internal/webrtc"
 )
@@ -210,7 +211,11 @@ func (a *app) runPeer(options config.PeerOptions) error {
 		listenerStarted = true
 		listenerResultCh = make(chan error, 1)
 		go func() {
-			listenerResultCh <- a.runListener(ctx, options.Listen, session, &streamCounter)
+			if options.SOCKS5 {
+				listenerResultCh <- a.runSOCKS5Listener(ctx, options.Listen, session, &streamCounter)
+			} else {
+				listenerResultCh <- a.runListener(ctx, options.Listen, session, &streamCounter)
+			}
 		}()
 	}
 
@@ -261,8 +266,13 @@ func (a *app) runPeer(options config.PeerOptions) error {
 			a.success("Authenticated with remote peer.")
 			startListener()
 			if options.Mode == config.ModeExpose {
-				a.event("expose_ready", "target", options.Target)
-				a.info("Forwarding inbound streams to %s.", options.Target)
+				if options.SOCKS5 {
+					a.event("expose_ready_socks5")
+					a.info("SOCKS5 mode: resolving targets per stream from connect peer.")
+				} else {
+					a.event("expose_ready", "target", options.Target)
+					a.info("Forwarding inbound streams to %s.", options.Target)
+				}
 			}
 		case err := <-listenerResultCh:
 			if err != nil && !errors.Is(err, context.Canceled) {
@@ -370,7 +380,7 @@ func (a *app) newSession(ctx context.Context, client *signaling.Client, stateMac
 	var onStream func(*pion.DataChannel)
 	if options.Mode == config.ModeExpose {
 		onStream = func(dc *pion.DataChannel) {
-			a.handleExposeStream(options.Target, dc)
+			a.handleExposeStream(options.Target, options.SOCKS5, dc)
 		}
 	}
 
@@ -438,22 +448,48 @@ func (a *app) handleSignal(ctx context.Context, client *signaling.Client, sessio
 	return nil
 }
 
-func (a *app) handleExposeStream(target string, dc *pion.DataChannel) {
+func (a *app) handleExposeStream(target string, socks5Mode bool, dc *pion.DataChannel) {
 	dc.OnOpen(func() {
 		// Dial off the pion callback goroutine: DialTimeout can block for
 		// seconds, and starving pion's dispatcher stalls every other
 		// channel on this PeerConnection.
 		go func() {
-			a.event("inbound_stream_opened", "label", dc.Label(), "target", target)
-			conn, err := net.DialTimeout("tcp", target, 10*time.Second)
+			actualTarget := target
+			if socks5Mode {
+				// In SOCKS5 mode the connect peer encodes the target in
+				// the channel label as "socks5-N|host:port". The expose
+				// peer resolves the target from the label so no extra
+				// protocol round-trip is needed.
+				t, err := parseSocks5Label(dc.Label())
+				if err != nil {
+					a.event("socks5_bad_label", "label", dc.Label(), "err", err.Error())
+					_ = dc.Close()
+					return
+				}
+				actualTarget = t
+			}
+			a.event("inbound_stream_opened", "label", dc.Label(), "target", actualTarget)
+			conn, err := net.DialTimeout("tcp", actualTarget, 10*time.Second)
 			if err != nil {
-				a.event("target_dial_failed", "target", target, "err", err.Error())
+				a.event("target_dial_failed", "target", actualTarget, "err", err.Error())
 				_ = dc.Close()
 				return
 			}
 			tunnel.Bridge(a.logger, dc, conn)
 		}()
 	})
+}
+
+// parseSocks5Label extracts the target address from a SOCKS5 channel
+// label produced by runSOCKS5Listener. Labels have the form
+// "socks5-N|host:port"; the pipe separates the stream counter from the
+// target so IPv6 colons in "host:port" are unambiguous.
+func parseSocks5Label(label string) (string, error) {
+	idx := strings.Index(label, "|")
+	if idx < 0 || idx == len(label)-1 {
+		return "", fmt.Errorf("malformed socks5 channel label %q", label)
+	}
+	return label[idx+1:], nil
 }
 
 func (a *app) runListener(ctx context.Context, listen string, session *rtcwebrtc.Session, counter *uint64) error {
@@ -502,6 +538,86 @@ func (a *app) runListener(ctx context.Context, listen string, session *rtcwebrtc
 			tunnel.Bridge(a.logger, dc, conn)
 		})
 	}
+}
+
+// runSOCKS5Listener accepts SOCKS5 CONNECT requests on listen and opens
+// a new data channel per connection. The target is encoded in the channel
+// label so the expose peer can dial it without an extra round-trip. Each
+// accepted connection is handled in its own goroutine so a slow SOCKS5
+// handshake cannot stall other concurrent connections.
+func (a *app) runSOCKS5Listener(ctx context.Context, listen string, session *rtcwebrtc.Session, counter *uint64) error {
+	listener, err := net.Listen("tcp", listen)
+	if err != nil {
+		return fmt.Errorf("listen on %s: %w", listen, err)
+	}
+	defer listener.Close()
+
+	a.event("socks5_listening", "addr", listen)
+	a.success("SOCKS5 proxy listening on %s — configure your client to use this address.", listen)
+
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = listener.Close()
+		case <-stop:
+		}
+	}()
+
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			var netErr net.Error
+			if errors.As(err, &netErr) && netErr.Timeout() {
+				continue
+			}
+			return fmt.Errorf("accept SOCKS5 connection: %w", err)
+		}
+		go a.handleSOCKS5Connect(conn, session, counter)
+	}
+}
+
+// handleSOCKS5Connect performs the SOCKS5 handshake, opens a data channel
+// to the expose peer with the target encoded in the label, and bridges
+// traffic once both sides are ready. It is always run in its own goroutine.
+func (a *app) handleSOCKS5Connect(conn net.Conn, session *rtcwebrtc.Session, counter *uint64) {
+	target, err := socks5.Handshake(conn)
+	if err != nil {
+		a.event("socks5_handshake_failed", "err", err.Error())
+		_ = conn.Close()
+		return
+	}
+
+	streamID := atomic.AddUint64(counter, 1)
+	// Encode target in the label using "|" as separator. "|" does not
+	// appear in valid "host:port" strings, which makes IPv6 bracket
+	// notation unambiguous (e.g. "socks5-1|[::1]:443").
+	label := fmt.Sprintf("socks5-%d|%s", streamID, target)
+
+	dc, err := session.OpenStreamChannel(label)
+	if err != nil {
+		socks5.ReplyFailure(conn)
+		_ = conn.Close()
+		a.event("socks5_stream_open_failed", "target", target, "err", err.Error())
+		return
+	}
+
+	a.event("socks5_connecting", "stream", label, "target", target)
+	dc.OnOpen(func() {
+		// Inform the SOCKS5 client that the connection is live before
+		// starting the bridge. The expose peer has not yet dialed the
+		// target at this point, but the channel is open end-to-end.
+		if err := socks5.ReplySuccess(conn); err != nil {
+			_ = conn.Close()
+			_ = dc.Close()
+			return
+		}
+		tunnel.Bridge(a.logger, dc, conn)
+	})
 }
 
 func (a *app) sendSignal(ctx context.Context, client *signaling.Client, signal signaling.Signal) error {
@@ -571,11 +687,13 @@ func (a *app) parsePeerFlags(mode config.PeerMode, args []string) (config.PeerOp
 
 	switch mode {
 	case config.ModeExpose:
-		fs.StringVar(&options.Target, "target", "", "local TCP target to expose, e.g. 127.0.0.1:22 (required)")
+		fs.StringVar(&options.Target, "target", "", "local TCP target to expose, e.g. 127.0.0.1:22 (required unless --socks5)")
 		fs.StringVar(&options.Target, "T", "", "alias for --target")
+		fs.BoolVar(&options.SOCKS5, "socks5", false, "accept dynamic targets per stream; connect peer must also pass --socks5")
 	case config.ModeConnect:
 		fs.StringVar(&options.Listen, "listen", defaultListen, "local TCP address where the remote target surfaces, e.g. 127.0.0.1:2222")
 		fs.StringVar(&options.Listen, "l", defaultListen, "alias for --listen")
+		fs.BoolVar(&options.SOCKS5, "socks5", false, "listen as a SOCKS5 proxy; expose peer must also pass --socks5")
 	}
 
 	fs.Usage = func() {
@@ -604,8 +722,8 @@ func (a *app) parsePeerFlags(mode config.PeerMode, args []string) (config.PeerOp
 	// "target is required" message.
 	switch mode {
 	case config.ModeExpose:
-		if strings.TrimSpace(options.Target) == "" {
-			return config.PeerOptions{}, false, errors.New("expose mode requires --target HOST:PORT (the local TCP endpoint to tunnel)")
+		if !options.SOCKS5 && strings.TrimSpace(options.Target) == "" {
+			return config.PeerOptions{}, false, errors.New("expose mode requires --target HOST:PORT or --socks5")
 		}
 	}
 
@@ -689,7 +807,11 @@ func (a *app) printExposeHandoff(options config.PeerOptions) {
 	fmt.Fprintf(a.stderr, "  %s %s\n", p.Muted("rendezvous token:"), p.Cyan(options.RendezvousToken))
 	fmt.Fprintf(a.stderr, "  %s %s\n", p.Muted("pairing secret  :"), p.Cyan(options.PairingSecret))
 	fmt.Fprintf(a.stderr, "  %s %s\n", p.Muted("broker          :"), p.Cyan(options.BrokerURL))
-	fmt.Fprintf(a.stderr, "  %s %s\n", p.Muted("target          :"), p.Cyan(options.Target))
+	if options.SOCKS5 {
+		fmt.Fprintf(a.stderr, "  %s %s\n", p.Muted("mode            :"), p.Cyan("socks5 (dynamic targets)"))
+	} else {
+		fmt.Fprintf(a.stderr, "  %s %s\n", p.Muted("target          :"), p.Cyan(options.Target))
+	}
 	fmt.Fprintln(a.stderr)
 	fmt.Fprintln(a.stderr, p.Bold("Run this on the connecting machine:"))
 	fmt.Fprintf(a.stderr, "  %s %s\n",
