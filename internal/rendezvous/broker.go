@@ -26,18 +26,6 @@ const (
 	writeTimeout       = 10 * time.Second
 	maxReadBytes       = 1 << 20
 
-	// wsPingInterval is how often the broker sends a ping frame to
-	// each connected peer. Short enough to keep reverse proxies
-	// (Cloudflare Tunnel, nginx, AWS ALB) from idling-out the
-	// WebSocket while the WebRTC DataChannel is carrying the payload.
-	wsPingInterval = 20 * time.Second
-	// wsPongWait bounds how long the broker's read side will wait for
-	// any frame (application message, pong, ping) before considering
-	// the peer dead. Must be > 2 × wsPingInterval.
-	wsPongWait = 60 * time.Second
-	// wsWriteWait bounds a single WriteControl call (ping).
-	wsWriteWait = 10 * time.Second
-
 	// DefaultWaiterTTL bounds how long a registered peer can sit
 	// unpaired before the broker evicts it. Prevents a
 	// register-and-ghost client from occupying a rendezvous_token slot.
@@ -62,6 +50,23 @@ const (
 	// after the last request before it is evicted from the map. Bounds
 	// memory growth under churn.
 	DefaultLimiterIdleTTL = 1 * time.Hour
+)
+
+// Keepalive tunables. Declared as vars (not consts) so tests can drive
+// real time fast without refactoring the API. Production code should
+// not mutate these after NewBroker.
+var (
+	// wsPingInterval is how often the broker sends a ping frame to
+	// each connected peer. Short enough to keep reverse proxies
+	// (Cloudflare Tunnel, nginx, AWS ALB) from idling-out the
+	// WebSocket while the WebRTC DataChannel is carrying the payload.
+	wsPingInterval = 20 * time.Second
+	// wsPongWait bounds how long the broker's read side will wait for
+	// any frame (application message, pong, ping) before considering
+	// the peer dead. Must be > 2 × wsPingInterval.
+	wsPongWait = 60 * time.Second
+	// wsWriteWait bounds a single WriteControl call (ping).
+	wsWriteWait = 10 * time.Second
 )
 
 type Broker struct {
