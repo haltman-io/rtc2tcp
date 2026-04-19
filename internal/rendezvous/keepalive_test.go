@@ -117,6 +117,62 @@ func TestBrokerPingsPeersDuringIdle(t *testing.T) {
 	t.Fatalf("expected ≥3 broker→peer pings within 1.5s @ 50ms interval, got %d", atomic.LoadInt32(&pingCount))
 }
 
+// TestBrokerRepliesToAppLevelPing confirms the broker understands
+// the application-layer ping/pong JSON messages. This is the primary
+// keepalive path for deployments behind intermediaries (Cloudflare
+// Tunnel, AWS ALB, nginx) that don't honour WebSocket control frames.
+func TestBrokerRepliesToAppLevelPing(t *testing.T) {
+	broker := NewBroker(log.New(io.Discard, "", 0))
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = broker.Shutdown(ctx)
+	})
+
+	server := httptest.NewServer(broker.Routes())
+	t.Cleanup(server.Close)
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/ws"
+	conn := dialRaw(t, wsURL)
+	defer conn.Close()
+
+	if err := conn.WriteJSON(signaling.Message{
+		Type: signaling.MessageTypeRegister,
+		Register: &signaling.Register{
+			RendezvousToken: "ping-test",
+			Mode:            "expose",
+		},
+	}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	// Consume the register ack.
+	var ack signaling.Message
+	if err := conn.ReadJSON(&ack); err != nil {
+		t.Fatalf("read ack: %v", err)
+	}
+
+	// Send an app-level ping with a distinctive token and expect a
+	// pong back with the same token.
+	if err := conn.WriteJSON(signaling.Message{
+		Type: signaling.MessageTypePing,
+		Ping: &signaling.Ping{Token: "probe-42"},
+	}); err != nil {
+		t.Fatalf("send ping: %v", err)
+	}
+
+	_ = conn.SetReadDeadline(time.Now().Add(time.Second))
+	var pong signaling.Message
+	if err := conn.ReadJSON(&pong); err != nil {
+		t.Fatalf("read pong: %v", err)
+	}
+	if pong.Type != signaling.MessageTypePong {
+		t.Fatalf("expected %q, got %q", signaling.MessageTypePong, pong.Type)
+	}
+	if pong.Pong == nil || pong.Pong.Token != "probe-42" {
+		t.Fatalf("expected pong with echoed token %q, got %+v", "probe-42", pong.Pong)
+	}
+}
+
 // TestBrokerEvictsSilentPeer confirms the read deadline fires when a
 // peer stops responding to pings entirely (e.g. blackholed path). The
 // broker should cut the connection rather than leaking goroutines.

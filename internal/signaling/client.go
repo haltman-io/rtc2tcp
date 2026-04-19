@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -20,21 +21,24 @@ const maxBrokerMessageBytes = 1 << 20
 // Keepalive tunables. Declared as vars (not consts) so tests can drive
 // real time fast without refactoring the API. Production code should
 // not mutate these after Dial.
+//
+// Two layers:
+//
+//  1. WebSocket ping/pong frames (wsPingInterval / wsPongWait).
+//     Standards-compliant, cheap. Broker's default gorilla handler
+//     auto-pongs. Counts as liveness on most intermediaries.
+//
+//  2. Application-level ping/pong JSON messages (appPingInterval).
+//     Generates real DATA frames on the wire, not control frames.
+//     Required for intermediaries that treat WS control frames
+//     inconsistently — notably cloudflared (Cloudflare Tunnel) over
+//     QUIC, where ping frames have been observed to not reset the
+//     idle timer. App-level frames always count.
 var (
-	// wsPingInterval is how often the client sends a WebSocket ping
-	// frame to the broker. Must be < wsPongWait and short enough to
-	// keep intermediaries (Cloudflare Tunnel, nginx, AWS ALB) from
-	// idling out the connection. Cloudflare Tunnel's default origin
-	// keepalive is 90s; AWS ALB's WebSocket idle is 60s; nginx
-	// `proxy_read_timeout` is 60s by default. 20s stays under all of
-	// them.
-	wsPingInterval = 20 * time.Second
-	// wsPongWait bounds how long the read side will wait for a pong
-	// (or any frame) from the broker before considering the connection
-	// dead. Set comfortably above 2 × wsPingInterval.
-	wsPongWait = 60 * time.Second
-	// wsWriteWait bounds a single WriteMessage/WriteControl call.
-	wsWriteWait = 10 * time.Second
+	wsPingInterval  = 20 * time.Second
+	wsPongWait      = 60 * time.Second
+	wsWriteWait     = 10 * time.Second
+	appPingInterval = 15 * time.Second
 )
 
 type Client struct {
@@ -78,9 +82,10 @@ func Dial(ctx context.Context, brokerURL string) (*Client, error) {
 		return client.conn.SetReadDeadline(time.Now().Add(wsPongWait))
 	})
 
-	client.workers.Add(2)
+	client.workers.Add(3)
 	go client.readLoop()
 	go client.pingLoop()
+	go client.appPingLoop()
 	return client, nil
 }
 
@@ -167,10 +172,64 @@ func (c *Client) readLoop() {
 		// but application messages count too.
 		_ = c.conn.SetReadDeadline(time.Now().Add(wsPongWait))
 
+		// Swallow broker-originated pings (we echo them as pongs)
+		// and pongs (liveness accounting only) so they never reach
+		// the peer event loop.
+		switch message.Type {
+		case MessageTypePing:
+			c.replyPong(message)
+			continue
+		case MessageTypePong:
+			continue
+		}
+
 		select {
 		case c.events <- message:
 		case <-c.done:
 			return
+		}
+	}
+}
+
+// replyPong responds to an application-level ping with an echoed
+// pong. Errors are silent — the ping loop on either side will detect
+// a broken connection via its own write, and the broker doesn't
+// require a pong to stay happy.
+func (c *Client) replyPong(ping Message) {
+	var token string
+	if ping.Ping != nil {
+		token = ping.Ping.Token
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), wsWriteWait)
+	defer cancel()
+	_ = c.send(ctx, Message{Type: MessageTypePong, Pong: &Pong{Token: token}})
+}
+
+// appPingLoop drives a periodic application-level ping JSON message.
+// Unlike WebSocket ping frames, application frames always count as
+// liveness to every intermediary — essential for cloudflared, which
+// tunnels traffic over QUIC and has been observed to ignore WS
+// control frames for idle accounting.
+func (c *Client) appPingLoop() {
+	defer c.workers.Done()
+	ticker := time.NewTicker(appPingInterval)
+	defer ticker.Stop()
+	seq := uint64(0)
+	for {
+		select {
+		case <-c.done:
+			return
+		case <-ticker.C:
+			seq++
+			ctx, cancel := context.WithTimeout(context.Background(), wsWriteWait)
+			err := c.send(ctx, Message{
+				Type: MessageTypePing,
+				Ping: &Ping{Token: strconv.FormatUint(seq, 10)},
+			})
+			cancel()
+			if err != nil {
+				return
+			}
 		}
 	}
 }

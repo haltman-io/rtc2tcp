@@ -322,6 +322,22 @@ func (b *Broker) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		_ = conn.SetReadDeadline(time.Now().Add(wsPongWait))
 
 		switch message.Type {
+		case signaling.MessageTypePing:
+			// Application-level keepalive. Reply with a pong echoing
+			// the client's token so it can correlate if desired.
+			var token string
+			if message.Ping != nil {
+				token = message.Ping.Token
+			}
+			_ = b.send(p, signaling.Message{
+				Type: signaling.MessageTypePong,
+				Pong: &signaling.Pong{Token: token},
+			})
+			continue
+		case signaling.MessageTypePong:
+			// Unsolicited pong — liveness only, deadline already
+			// refreshed above.
+			continue
 		case signaling.MessageTypeSignal:
 			if message.Signal == nil {
 				_ = b.send(p, brokerError("invalid-signal", "signal payload is required"))

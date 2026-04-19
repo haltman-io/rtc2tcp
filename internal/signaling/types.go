@@ -8,6 +8,12 @@ type Message struct {
 	Error      *ErrorPayload `json:"error,omitempty"`
 	PeerLeft   *PeerLeft     `json:"peerLeft,omitempty"`
 	Registered *Registered   `json:"registered,omitempty"`
+	// Ping / Pong carry opaque client-provided tokens that are echoed
+	// verbatim. Used for application-level keepalive: real JSON
+	// frames traverse intermediaries (Cloudflare Tunnel, AWS ALB,
+	// nginx) that treat WebSocket control frames inconsistently.
+	Ping *Ping `json:"ping,omitempty"`
+	Pong *Pong `json:"pong,omitempty"`
 }
 
 type Register struct {
@@ -53,6 +59,16 @@ type PeerLeft struct {
 	Reason string `json:"reason,omitempty"`
 }
 
+type Ping struct {
+	// Token is echoed back verbatim in the pong. Clients may use it
+	// for round-trip measurement; the broker does not interpret it.
+	Token string `json:"token,omitempty"`
+}
+
+type Pong struct {
+	Token string `json:"token,omitempty"`
+}
+
 const (
 	MessageTypeRegister   = "register"
 	MessageTypeRegistered = "registered"
@@ -60,6 +76,8 @@ const (
 	MessageTypeSignal     = "signal"
 	MessageTypeError      = "error"
 	MessageTypePeerLeft   = "peer-left"
+	MessageTypePing       = "ping"
+	MessageTypePong       = "pong"
 
 	SignalKindOffer  = "offer"
 	SignalKindAnswer = "answer"

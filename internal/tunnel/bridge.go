@@ -33,6 +33,7 @@ func Bridge(logger *log.Logger, dc *pion.DataChannel, conn net.Conn) {
 
 	var closeOnce sync.Once
 	drain := make(chan struct{}, 1)
+	done := make(chan struct{})
 	closeAll := func(reason string, err error) {
 		closeOnce.Do(func() {
 			if err != nil && err != io.EOF {
@@ -44,11 +45,11 @@ func Bridge(logger *log.Logger, dc *pion.DataChannel, conn net.Conn) {
 			}
 			_ = conn.Close()
 			_ = dc.Close()
-			// Unblock the reader goroutine if it is waiting for drain.
-			select {
-			case drain <- struct{}{}:
-			default:
-			}
+			// done is read-only for the reader — closing it releases
+			// any goroutine blocked on the backpressure select below
+			// without the panic risk of closing `drain` (which the
+			// OnBufferedAmountLow callback still writes to).
+			close(done)
 		})
 	}
 
@@ -87,7 +88,11 @@ func Bridge(logger *log.Logger, dc *pion.DataChannel, conn net.Conn) {
 					return
 				}
 				for dc.BufferedAmount() > bufferedAmountHighThreshold {
-					if _, ok := <-drain; !ok {
+					select {
+					case <-drain:
+						// OnBufferedAmountLow fired; re-check.
+					case <-done:
+						// Tunnel is being torn down; exit cleanly.
 						return
 					}
 				}
