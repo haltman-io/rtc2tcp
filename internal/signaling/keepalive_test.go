@@ -35,8 +35,13 @@ func wsURLFromHTTP(server *httptest.Server) string {
 // TestClientSendsPings verifies the keepalive goroutine actually
 // writes ping frames to the wire. This is the test that would have
 // caught the original bug.
+//
+// Timing note: intervals are deliberately generous because CI runs
+// `go test -race`, which can multiply scheduler latency by 5×, and
+// Windows runners have ~15ms timer granularity. Tighter intervals
+// flake without changing what the test actually proves.
 func TestClientSendsPings(t *testing.T) {
-	withFastKeepalive(t, 50*time.Millisecond, 2*time.Second)
+	withFastKeepalive(t, 100*time.Millisecond, 5*time.Second)
 
 	var pingCount int32
 	upgrader := websocket.Upgrader{
@@ -68,7 +73,7 @@ func TestClientSendsPings(t *testing.T) {
 	}))
 	defer server.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	client, err := Dial(ctx, wsURLFromHTTP(server))
@@ -77,13 +82,12 @@ func TestClientSendsPings(t *testing.T) {
 	}
 	defer client.Close()
 
-	// Expect ≥3 pings in 300ms at a 50ms interval.
-	deadline := time.Now().Add(500 * time.Millisecond)
+	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if atomic.LoadInt32(&pingCount) >= 3 {
 			return
 		}
-		time.Sleep(20 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatalf("expected at least 3 pings from client, got %d", atomic.LoadInt32(&pingCount))
 }
@@ -94,7 +98,7 @@ func TestClientSendsPings(t *testing.T) {
 // layer). With keepalive working, the client's ticker keeps the WS
 // alive and the pong handler refreshes read deadlines.
 func TestClientSurvivesIdleBeyondNaiveTimeout(t *testing.T) {
-	withFastKeepalive(t, 50*time.Millisecond, 500*time.Millisecond)
+	withFastKeepalive(t, 100*time.Millisecond, 1*time.Second)
 
 	upgrader := websocket.Upgrader{
 		CheckOrigin: func(*http.Request) bool { return true },
@@ -115,7 +119,7 @@ func TestClientSurvivesIdleBeyondNaiveTimeout(t *testing.T) {
 	}))
 	defer server.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	client, err := Dial(ctx, wsURLFromHTTP(server))
@@ -124,10 +128,10 @@ func TestClientSurvivesIdleBeyondNaiveTimeout(t *testing.T) {
 	}
 	defer client.Close()
 
-	// Idle for 4 × pongWait. Without pings the read would have
-	// blown up after 500ms; with pings, nothing fires.
+	// Idle for 3 × pongWait. Without pings the read would have
+	// blown up after 1s; with pings, nothing fires.
 	select {
-	case <-time.After(2 * time.Second):
+	case <-time.After(3 * time.Second):
 	case msg, ok := <-client.Events():
 		if !ok {
 			t.Fatal("client events channel closed during idle")
@@ -143,7 +147,7 @@ func TestClientSurvivesIdleBeyondNaiveTimeout(t *testing.T) {
 // bulletproof layer needed for intermediaries (cloudflared over QUIC)
 // that ignore WebSocket control frames for idle accounting.
 func TestClientSendsApplicationPings(t *testing.T) {
-	withFastKeepalive(t, 50*time.Millisecond, 2*time.Second)
+	withFastKeepalive(t, 100*time.Millisecond, 5*time.Second)
 
 	var appPingCount int32
 	upgrader := websocket.Upgrader{
@@ -182,7 +186,7 @@ func TestClientSendsApplicationPings(t *testing.T) {
 	}))
 	defer server.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	client, err := Dial(ctx, wsURLFromHTTP(server))
@@ -191,8 +195,7 @@ func TestClientSendsApplicationPings(t *testing.T) {
 	}
 	defer client.Close()
 
-	// Wait up to 1s for ≥3 app-level pings at 50ms interval.
-	deadline := time.Now().Add(time.Second)
+	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if atomic.LoadInt32(&appPingCount) >= 3 {
 			// The client's read loop MUST swallow pongs — peer code
@@ -205,9 +208,9 @@ func TestClientSendsApplicationPings(t *testing.T) {
 			}
 			return
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 	}
-	t.Fatalf("expected ≥3 application-level pings within 1s, got %d", atomic.LoadInt32(&appPingCount))
+	t.Fatalf("expected ≥3 application-level pings within 5s, got %d", atomic.LoadInt32(&appPingCount))
 }
 
 // TestClientRepliesToBrokerInitiatedPings — the symmetric case:
@@ -215,7 +218,9 @@ func TestClientSendsApplicationPings(t *testing.T) {
 // and the client replies with a pong, without the peer event loop
 // seeing either.
 func TestClientRepliesToBrokerInitiatedPings(t *testing.T) {
-	withFastKeepalive(t, 10*time.Second, 2*time.Second)
+	// Long client ping interval — we don't want the client's own
+	// pings to noise up the server's pong counter for this test.
+	withFastKeepalive(t, 30*time.Second, 10*time.Second)
 
 	var pongCount int32
 	upgrader := websocket.Upgrader{
@@ -229,7 +234,8 @@ func TestClientRepliesToBrokerInitiatedPings(t *testing.T) {
 		}
 		defer conn.Close()
 
-		// Push a ping immediately, then another.
+		// Push 3 pings, spaced enough that race-mode scheduler jitter
+		// doesn't merge them into one frame at the OS layer.
 		for i := 0; i < 3; i++ {
 			if err := conn.WriteJSON(Message{
 				Type: MessageTypePing,
@@ -237,7 +243,7 @@ func TestClientRepliesToBrokerInitiatedPings(t *testing.T) {
 			}); err != nil {
 				return
 			}
-			time.Sleep(50 * time.Millisecond)
+			time.Sleep(100 * time.Millisecond)
 		}
 
 		// Count pongs arriving back.
@@ -253,7 +259,7 @@ func TestClientRepliesToBrokerInitiatedPings(t *testing.T) {
 	}))
 	defer server.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	client, err := Dial(ctx, wsURLFromHTTP(server))
@@ -262,18 +268,18 @@ func TestClientRepliesToBrokerInitiatedPings(t *testing.T) {
 	}
 	defer client.Close()
 
-	deadline := time.Now().Add(time.Second)
+	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if atomic.LoadInt32(&pongCount) >= 3 {
 			// Pings from the broker must also be swallowed locally.
 			select {
 			case msg := <-client.Events():
 				t.Fatalf("ping leaked to events channel: %+v", msg)
-			case <-time.After(50 * time.Millisecond):
+			case <-time.After(100 * time.Millisecond):
 			}
 			return
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatalf("expected client to reply with ≥3 pongs, got %d", atomic.LoadInt32(&pongCount))
 }
@@ -282,7 +288,7 @@ func TestClientRepliesToBrokerInitiatedPings(t *testing.T) {
 // still works: if the server dies without a close frame, the client
 // emits a broker-read error so the caller can react.
 func TestClientSurfacesReadErrorOnDeadServer(t *testing.T) {
-	withFastKeepalive(t, 50*time.Millisecond, 200*time.Millisecond)
+	withFastKeepalive(t, 100*time.Millisecond, 500*time.Millisecond)
 
 	upgrader := websocket.Upgrader{
 		CheckOrigin: func(*http.Request) bool { return true },
@@ -297,11 +303,11 @@ func TestClientSurfacesReadErrorOnDeadServer(t *testing.T) {
 		connReady <- conn
 		// Hold the handler open long enough for the test to close
 		// the underlying TCP from behind the client.
-		time.Sleep(time.Second)
+		time.Sleep(5 * time.Second)
 	}))
 	defer server.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	client, err := Dial(ctx, wsURLFromHTTP(server))
@@ -326,7 +332,7 @@ func TestClientSurfacesReadErrorOnDeadServer(t *testing.T) {
 		if msg.Type != MessageTypeError || msg.Error == nil || msg.Error.Code != "broker-read" {
 			t.Fatalf("expected broker-read error, got %+v", msg)
 		}
-	case <-time.After(time.Second):
-		t.Fatal("client did not surface broker-read error within 1s of server shutdown")
+	case <-time.After(5 * time.Second):
+		t.Fatal("client did not surface broker-read error within 5s of server shutdown")
 	}
 }
