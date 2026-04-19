@@ -26,6 +26,18 @@ const (
 	writeTimeout       = 10 * time.Second
 	maxReadBytes       = 1 << 20
 
+	// wsPingInterval is how often the broker sends a ping frame to
+	// each connected peer. Short enough to keep reverse proxies
+	// (Cloudflare Tunnel, nginx, AWS ALB) from idling-out the
+	// WebSocket while the WebRTC DataChannel is carrying the payload.
+	wsPingInterval = 20 * time.Second
+	// wsPongWait bounds how long the broker's read side will wait for
+	// any frame (application message, pong, ping) before considering
+	// the peer dead. Must be > 2 × wsPingInterval.
+	wsPongWait = 60 * time.Second
+	// wsWriteWait bounds a single WriteControl call (ping).
+	wsWriteWait = 10 * time.Second
+
 	// DefaultWaiterTTL bounds how long a registered peer can sit
 	// unpaired before the broker evicts it. Prevents a
 	// register-and-ghost client from occupying a rendezvous_token slot.
@@ -244,6 +256,20 @@ func (b *Broker) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		"rendezvous_token", p.rendezvousKey,
 		"source_ip", sourceIP,
 	))
+
+	// Arm the keepalive path: start sending pings and arm a pong-wait
+	// read deadline. Any inbound frame (application message OR pong)
+	// refreshes the deadline via the pong handler / post-read refresh
+	// below. Must happen AFTER registerPeer has cleared the
+	// initialReadTimeout it installed for the register handshake.
+	_ = conn.SetReadDeadline(time.Now().Add(wsPongWait))
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(wsPongWait))
+	})
+	pingDone := make(chan struct{})
+	defer close(pingDone)
+	go b.runPeerKeepalive(p, pingDone)
+
 	defer func() {
 		b.unregisterPeer(p, "peer disconnected")
 		_ = p.conn.Close()
@@ -284,6 +310,11 @@ func (b *Broker) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			b.logger.Print(FormatEvent("read_failed", "peer_id", p.id, "err", err.Error()))
 			return
 		}
+
+		// Any inbound application frame refreshes the read deadline —
+		// the pong handler already does this for pongs, but a steady
+		// stream of signals during ICE should also count as liveness.
+		_ = conn.SetReadDeadline(time.Now().Add(wsPongWait))
 
 		switch message.Type {
 		case signaling.MessageTypeSignal:
@@ -724,6 +755,32 @@ func canonicalHost(host, port string) string {
 		return host
 	}
 	return net.JoinHostPort(host, port)
+}
+
+// runPeerKeepalive drives broker → peer WebSocket pings at
+// wsPingInterval. Exits when done is closed (peer handler returning)
+// or on the first write failure. Runs one goroutine per connected
+// peer; cheap compared to the session it protects.
+func (b *Broker) runPeerKeepalive(p *peer, done <-chan struct{}) {
+	ticker := time.NewTicker(wsPingInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+			p.writeMu.Lock()
+			err := p.conn.WriteControl(
+				websocket.PingMessage,
+				nil,
+				time.Now().Add(wsWriteWait),
+			)
+			p.writeMu.Unlock()
+			if err != nil {
+				return
+			}
+		}
+	}
 }
 
 // remoteIP extracts the source IP from r.RemoteAddr, falling back to

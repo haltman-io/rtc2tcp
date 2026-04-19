@@ -221,6 +221,29 @@ func (a *app) runPeer(options config.PeerOptions) error {
 		return err
 	}
 
+	// brokerEvents is the live events channel; it's nilled out below
+	// once the WebRTC tunnel is authenticated and the broker socket
+	// dies. A nil channel in a select blocks forever, which is exactly
+	// what we want: the tunnel keeps running off WebRTC alone.
+	brokerEvents := client.Events()
+
+	// postAuth reports whether the peer has reached a state where the
+	// broker WebSocket is no longer in the critical path — once auth
+	// succeeds and the WebRTC DataChannel is carrying traffic,
+	// signaling is done and a lost broker socket should not tear down
+	// a working tunnel.
+	postAuth := func() bool {
+		return stateMachine.IsOneOf(rtcwebrtc.StateAuthenticated, rtcwebrtc.StateStreaming)
+	}
+
+	// onBrokerLoss logs the event, detaches the broker events channel,
+	// and returns nil (non-fatal). Only safe to call after postAuth().
+	onBrokerLoss := func(reason string) {
+		a.event("broker_detached", "reason", reason)
+		a.warn("Broker connection lost (%s); tunnel continues over WebRTC.", reason)
+		brokerEvents = nil
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -246,8 +269,12 @@ func (a *app) runPeer(options config.PeerOptions) error {
 				return failSession(err)
 			}
 			return nil
-		case message, ok := <-client.Events():
+		case message, ok := <-brokerEvents:
 			if !ok {
+				if postAuth() {
+					onBrokerLoss("events channel closed")
+					continue
+				}
 				return failSession(errors.New("broker connection closed"))
 			}
 
@@ -312,6 +339,9 @@ func (a *app) runPeer(options config.PeerOptions) error {
 				if message.PeerLeft != nil && message.PeerLeft.Reason != "" {
 					reason = message.PeerLeft.Reason
 				}
+				// PeerLeft only fires for the remote WebRTC peer going
+				// away. Always fatal regardless of state — there is no
+				// tunnel to preserve once the other side is gone.
 				if session != nil {
 					_ = session.Fail(fmt.Errorf("peer left: %s", reason))
 				}
@@ -319,6 +349,14 @@ func (a *app) runPeer(options config.PeerOptions) error {
 			case signaling.MessageTypeError:
 				if message.Error == nil {
 					return failSession(errors.New("broker returned an unspecified error"))
+				}
+				// Synthesised by the signaling client when the
+				// WebSocket itself fails. Once we're past auth the
+				// broker isn't in the data path — log and drop, keep
+				// forwarding over WebRTC.
+				if message.Error.Code == "broker-read" && postAuth() {
+					onBrokerLoss(fmt.Sprintf("broker-read: %s", message.Error.Message))
+					continue
 				}
 				return failSession(fmt.Errorf("broker error [%s]: %s", message.Error.Code, message.Error.Message))
 			default:
@@ -693,6 +731,13 @@ func (a *app) info(format string, args ...any) {
 		return
 	}
 	fmt.Fprintf(a.stderr, "%s %s\n", a.palette.Info("[info]"), fmt.Sprintf(format, args...))
+}
+
+func (a *app) warn(format string, args ...any) {
+	if a.quiet {
+		return
+	}
+	fmt.Fprintf(a.stderr, "%s %s\n", a.palette.Warn("[warn]"), fmt.Sprintf(format, args...))
 }
 
 func (a *app) success(format string, args ...any) {

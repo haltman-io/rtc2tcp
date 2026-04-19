@@ -17,6 +17,26 @@ import (
 
 const maxBrokerMessageBytes = 1 << 20
 
+// Keepalive tunables. Declared as vars (not consts) so tests can drive
+// real time fast without refactoring the API. Production code should
+// not mutate these after Dial.
+var (
+	// wsPingInterval is how often the client sends a WebSocket ping
+	// frame to the broker. Must be < wsPongWait and short enough to
+	// keep intermediaries (Cloudflare Tunnel, nginx, AWS ALB) from
+	// idling out the connection. Cloudflare Tunnel's default origin
+	// keepalive is 90s; AWS ALB's WebSocket idle is 60s; nginx
+	// `proxy_read_timeout` is 60s by default. 20s stays under all of
+	// them.
+	wsPingInterval = 20 * time.Second
+	// wsPongWait bounds how long the read side will wait for a pong
+	// (or any frame) from the broker before considering the connection
+	// dead. Set comfortably above 2 × wsPingInterval.
+	wsPongWait = 60 * time.Second
+	// wsWriteWait bounds a single WriteMessage/WriteControl call.
+	wsWriteWait = 10 * time.Second
+)
+
 type Client struct {
 	conn   *websocket.Conn
 	events chan Message
@@ -24,6 +44,7 @@ type Client struct {
 
 	writeMu sync.Mutex
 	closeMu sync.Once
+	workers sync.WaitGroup
 }
 
 func Dial(ctx context.Context, brokerURL string) (*Client, error) {
@@ -49,7 +70,17 @@ func Dial(ctx context.Context, brokerURL string) (*Client, error) {
 		done:   make(chan struct{}),
 	}
 
+	// Arm read deadline and refresh it on every pong. The pong handler
+	// runs inside ReadJSON/NextReader, so this is race-free with the
+	// read loop.
+	_ = conn.SetReadDeadline(time.Now().Add(wsPongWait))
+	conn.SetPongHandler(func(string) error {
+		return client.conn.SetReadDeadline(time.Now().Add(wsPongWait))
+	})
+
+	client.workers.Add(2)
 	go client.readLoop()
+	go client.pingLoop()
 	return client, nil
 }
 
@@ -77,6 +108,7 @@ func (c *Client) Close() error {
 		close(c.done)
 		err = c.conn.Close()
 	})
+	c.workers.Wait()
 	return err
 }
 
@@ -89,7 +121,7 @@ func (c *Client) send(ctx context.Context, message Message) error {
 			return err
 		}
 	} else {
-		if err := c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		if err := c.conn.SetWriteDeadline(time.Now().Add(wsWriteWait)); err != nil {
 			return err
 		}
 	}
@@ -102,6 +134,7 @@ func (c *Client) send(ctx context.Context, message Message) error {
 }
 
 func (c *Client) readLoop() {
+	defer c.workers.Done()
 	defer close(c.events)
 	for {
 		select {
@@ -129,10 +162,42 @@ func (c *Client) readLoop() {
 			return
 		}
 
+		// Any inbound frame is evidence of a live connection; refresh
+		// the read deadline. Pong handler already does this for pongs,
+		// but application messages count too.
+		_ = c.conn.SetReadDeadline(time.Now().Add(wsPongWait))
+
 		select {
 		case c.events <- message:
 		case <-c.done:
 			return
+		}
+	}
+}
+
+// pingLoop drives a periodic WebSocket ping so intermediaries (reverse
+// proxies, tunnels) don't idle-timeout the connection while the
+// WebRTC DataChannel is carrying the actual payload. Exits on c.done
+// or the first write failure.
+func (c *Client) pingLoop() {
+	defer c.workers.Done()
+	ticker := time.NewTicker(wsPingInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-c.done:
+			return
+		case <-ticker.C:
+			c.writeMu.Lock()
+			err := c.conn.WriteControl(
+				websocket.PingMessage,
+				nil,
+				time.Now().Add(wsWriteWait),
+			)
+			c.writeMu.Unlock()
+			if err != nil {
+				return
+			}
 		}
 	}
 }
