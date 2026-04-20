@@ -22,6 +22,7 @@ import (
 	"github.com/haltman-io/rtc2tcp/internal/banner"
 	"github.com/haltman-io/rtc2tcp/internal/color"
 	"github.com/haltman-io/rtc2tcp/internal/config"
+	"github.com/haltman-io/rtc2tcp/internal/httpconnect"
 	"github.com/haltman-io/rtc2tcp/internal/logx"
 	"github.com/haltman-io/rtc2tcp/internal/rendezvous"
 	"github.com/haltman-io/rtc2tcp/internal/signaling"
@@ -211,9 +212,12 @@ func (a *app) runPeer(options config.PeerOptions) error {
 		listenerStarted = true
 		listenerResultCh = make(chan error, 1)
 		go func() {
-			if options.SOCKS5 {
+			switch {
+			case options.SOCKS5:
 				listenerResultCh <- a.runSOCKS5Listener(ctx, options.Listen, session, &streamCounter)
-			} else {
+			case options.HTTPConnect:
+				listenerResultCh <- a.runHTTPConnectListener(ctx, options.Listen, session, &streamCounter)
+			default:
 				listenerResultCh <- a.runListener(ctx, options.Listen, session, &streamCounter)
 			}
 		}()
@@ -272,10 +276,14 @@ func (a *app) runPeer(options config.PeerOptions) error {
 			a.success("Authenticated with remote peer.")
 			startListener()
 			if options.Mode == config.ModeExpose {
-				if options.SOCKS5 {
+				switch {
+				case options.SOCKS5:
 					a.event("expose_ready_socks5")
 					a.info("SOCKS5 mode: resolving targets per stream from connect peer.")
-				} else {
+				case options.HTTPConnect:
+					a.event("expose_ready_http_connect")
+					a.info("HTTP CONNECT mode: resolving targets per stream from connect peer.")
+				default:
 					a.event("expose_ready", "target", options.Target)
 					a.info("Forwarding inbound streams to %s.", options.Target)
 				}
@@ -385,8 +393,9 @@ func (a *app) runPeer(options config.PeerOptions) error {
 func (a *app) newSession(ctx context.Context, client *signaling.Client, stateMachine *rtcwebrtc.StateMachine, options config.PeerOptions, authenticator auth.Authenticator, paired signaling.Paired) (*rtcwebrtc.Session, error) {
 	var onStream func(*pion.DataChannel)
 	if options.Mode == config.ModeExpose {
+		dynamicMode := options.SOCKS5 || options.HTTPConnect
 		onStream = func(dc *pion.DataChannel) {
-			a.handleExposeStream(options.Target, options.SOCKS5, dc)
+			a.handleExposeStream(options.Target, dynamicMode, dc)
 		}
 	}
 
@@ -454,21 +463,21 @@ func (a *app) handleSignal(ctx context.Context, client *signaling.Client, sessio
 	return nil
 }
 
-func (a *app) handleExposeStream(target string, socks5Mode bool, dc *pion.DataChannel) {
+func (a *app) handleExposeStream(target string, dynamicMode bool, dc *pion.DataChannel) {
 	dc.OnOpen(func() {
-		// Dial off the pion callback goroutine: DialTimeout can block for
-		// seconds, and starving pion's dispatcher stalls every other
-		// channel on this PeerConnection.
+		/* Dial off the pion callback goroutine: DialTimeout can block for
+		seconds, and starving pion's dispatcher stalls every other channel
+		on this PeerConnection. */
 		go func() {
 			actualTarget := target
-			if socks5Mode {
-				// In SOCKS5 mode the connect peer encodes the target in
-				// the channel label as "socks5-N|host:port". The expose
-				// peer resolves the target from the label so no extra
-				// protocol round-trip is needed.
-				t, err := parseSocks5Label(dc.Label())
+			if dynamicMode {
+				/* In dynamic mode (SOCKS5 or HTTP CONNECT) the connect peer
+				encodes the target in the channel label as "prefix-N|host:port".
+				The expose peer extracts the target from the label so no extra
+				protocol round-trip is needed. */
+				t, err := parseDynamicLabel(dc.Label())
 				if err != nil {
-					a.event("socks5_bad_label", "label", dc.Label(), "err", err.Error())
+					a.event("label_parse_error", "label", dc.Label(), "err", err.Error())
 					_ = dc.Close()
 					return
 				}
@@ -481,14 +490,14 @@ func (a *app) handleExposeStream(target string, socks5Mode bool, dc *pion.DataCh
 				_ = dc.Close()
 				return
 			}
-			// In SOCKS5 mode the connect peer is waiting for a ready
-			// signal before it sends the SOCKS5 success reply to the
-			// client. Send the signal now so dc.OnMessage (set by
-			// Bridge below) is registered before the client's first
-			// bytes arrive on the channel.
-			if socks5Mode {
+			/* In dynamic mode the connect peer waits for a ready signal
+			before it sends the proxy success reply to the client. Send
+			the signal now so dc.OnMessage (set by Bridge below) is
+			registered before the client's first bytes arrive on the
+			channel. */
+			if dynamicMode {
 				if sendErr := dc.Send([]byte{0x01}); sendErr != nil {
-					a.event("socks5_ready_signal_failed", "label", dc.Label(), "err", sendErr.Error())
+					a.event("ready_signal_failed", "label", dc.Label(), "err", sendErr.Error())
 					_ = conn.Close()
 					_ = dc.Close()
 					return
@@ -499,14 +508,14 @@ func (a *app) handleExposeStream(target string, socks5Mode bool, dc *pion.DataCh
 	})
 }
 
-// parseSocks5Label extracts the target address from a SOCKS5 channel
-// label produced by runSOCKS5Listener. Labels have the form
-// "socks5-N|host:port"; the pipe separates the stream counter from the
-// target so IPv6 colons in "host:port" are unambiguous.
-func parseSocks5Label(label string) (string, error) {
+/* parseDynamicLabel extracts the target address from a dynamic-mode channel
+label produced by runSOCKS5Listener or runHTTPConnectListener. Labels have
+the form "prefix-N|host:port"; the pipe separates the stream counter from
+the target so IPv6 colons in "host:port" are unambiguous. */
+func parseDynamicLabel(label string) (string, error) {
 	idx := strings.Index(label, "|")
 	if idx < 0 || idx == len(label)-1 {
-		return "", fmt.Errorf("malformed socks5 channel label %q", label)
+		return "", fmt.Errorf("malformed dynamic channel label %q", label)
 	}
 	return label[idx+1:], nil
 }
@@ -662,6 +671,110 @@ func (a *app) handleSOCKS5Connect(conn net.Conn, session *rtcwebrtc.Session, cou
 	})
 }
 
+/* runHTTPConnectListener accepts HTTP CONNECT requests on listen and opens
+a new data channel per connection. The target is encoded in the channel
+label so the expose peer can dial it without an extra round-trip. Each
+accepted connection is handled in its own goroutine so a slow CONNECT
+handshake cannot stall other concurrent connections. */
+func (a *app) runHTTPConnectListener(ctx context.Context, listen string, session *rtcwebrtc.Session, counter *uint64) error {
+	listener, err := net.Listen("tcp", listen)
+	if err != nil {
+		return fmt.Errorf("listen on %s: %w", listen, err)
+	}
+	defer listener.Close()
+
+	a.event("http_connect_listening", "addr", listen)
+	a.success("HTTP CONNECT proxy listening on %s — configure your client to use this address.", listen)
+
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = listener.Close()
+		case <-stop:
+		}
+	}()
+
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			var netErr net.Error
+			if errors.As(err, &netErr) && netErr.Timeout() {
+				continue
+			}
+			return fmt.Errorf("accept HTTP CONNECT connection: %w", err)
+		}
+		go a.handleHTTPConnect(conn, session, counter)
+	}
+}
+
+/* handleHTTPConnect performs the HTTP CONNECT handshake, opens a data
+channel to the expose peer with the target encoded in the label, and
+bridges traffic once both sides are ready. It is always run in its own
+goroutine. */
+func (a *app) handleHTTPConnect(conn net.Conn, session *rtcwebrtc.Session, counter *uint64) {
+	target, err := httpconnect.Handshake(conn)
+	if err != nil {
+		a.event("http_connect_handshake_failed", "err", err.Error())
+		_ = conn.Close()
+		return
+	}
+
+	streamID := atomic.AddUint64(counter, 1)
+	/* Encode target in the label using "|" as separator. "|" does not
+	appear in valid "host:port" strings, which makes IPv6 bracket
+	notation unambiguous (e.g. "http-1|[::1]:443"). */
+	label := fmt.Sprintf("http-%d|%s", streamID, target)
+
+	dc, err := session.OpenStreamChannel(label)
+	if err != nil {
+		httpconnect.ReplyFailure(conn)
+		_ = conn.Close()
+		a.event("http_connect_stream_open_failed", "target", target, "err", err.Error())
+		return
+	}
+
+	a.event("http_connect_connecting", "stream", label, "target", target)
+	dc.OnOpen(func() {
+		/* The expose peer dials the target asynchronously and only calls
+		dc.Send (the ready signal) after Bridge is set up on its side.
+		Register a temporary OnMessage handler that waits for that signal
+		so we do not send the HTTP 200 reply before the expose side has
+		registered its dc.OnMessage. Without this, the client's first
+		bytes arrive on the channel before pion has a handler and are
+		silently dropped. */
+		readyCh := make(chan struct{}, 1)
+		dc.OnMessage(func(_ pion.DataChannelMessage) {
+			select {
+			case readyCh <- struct{}{}:
+			default:
+			}
+		})
+		go func() {
+			select {
+			case <-readyCh:
+			case <-time.After(15 * time.Second):
+				a.event("http_connect_ready_timeout", "stream", label, "target", target)
+				_ = conn.Close()
+				_ = dc.Close()
+				return
+			}
+			/* Bridge first: overwrites the temporary OnMessage handler
+			with the real one before the client gets the 200 reply and
+			starts sending data. */
+			tunnel.Bridge(a.logger, dc, conn)
+			if err := httpconnect.ReplySuccess(conn); err != nil {
+				_ = conn.Close()
+				_ = dc.Close()
+			}
+		}()
+	})
+}
+
 func (a *app) sendSignal(ctx context.Context, client *signaling.Client, signal signaling.Signal) error {
 	if client == nil {
 		return errors.New("broker client is required")
@@ -729,13 +842,15 @@ func (a *app) parsePeerFlags(mode config.PeerMode, args []string) (config.PeerOp
 
 	switch mode {
 	case config.ModeExpose:
-		fs.StringVar(&options.Target, "target", "", "local TCP target to expose, e.g. 127.0.0.1:22 (required unless --socks5)")
+		fs.StringVar(&options.Target, "target", "", "local TCP target to expose, e.g. 127.0.0.1:22 (required unless --socks5 or --http-connect)")
 		fs.StringVar(&options.Target, "T", "", "alias for --target")
-		fs.BoolVar(&options.SOCKS5, "socks5", false, "accept dynamic targets per stream; connect peer must also pass --socks5")
+		fs.BoolVar(&options.SOCKS5, "socks5", false, "accept dynamic targets per stream (SOCKS5); connect peer must also pass --socks5")
+		fs.BoolVar(&options.HTTPConnect, "http-connect", false, "accept dynamic targets per stream (HTTP CONNECT); connect peer must also pass --http-connect")
 	case config.ModeConnect:
 		fs.StringVar(&options.Listen, "listen", defaultListen, "local TCP address where the remote target surfaces, e.g. 127.0.0.1:2222")
 		fs.StringVar(&options.Listen, "l", defaultListen, "alias for --listen")
 		fs.BoolVar(&options.SOCKS5, "socks5", false, "listen as a SOCKS5 proxy; expose peer must also pass --socks5")
+		fs.BoolVar(&options.HTTPConnect, "http-connect", false, "listen as an HTTP CONNECT proxy; expose peer must also pass --http-connect")
 	}
 
 	fs.Usage = func() {
@@ -764,8 +879,8 @@ func (a *app) parsePeerFlags(mode config.PeerMode, args []string) (config.PeerOp
 	// "target is required" message.
 	switch mode {
 	case config.ModeExpose:
-		if !options.SOCKS5 && strings.TrimSpace(options.Target) == "" {
-			return config.PeerOptions{}, false, errors.New("expose mode requires --target HOST:PORT or --socks5")
+		if !options.SOCKS5 && !options.HTTPConnect && strings.TrimSpace(options.Target) == "" {
+			return config.PeerOptions{}, false, errors.New("expose mode requires --target HOST:PORT, --socks5, or --http-connect")
 		}
 	}
 
@@ -849,16 +964,27 @@ func (a *app) printExposeHandoff(options config.PeerOptions) {
 	fmt.Fprintf(a.stderr, "  %s %s\n", p.Muted("rendezvous token:"), p.Cyan(options.RendezvousToken))
 	fmt.Fprintf(a.stderr, "  %s %s\n", p.Muted("pairing secret  :"), p.Cyan(options.PairingSecret))
 	fmt.Fprintf(a.stderr, "  %s %s\n", p.Muted("broker          :"), p.Cyan(options.BrokerURL))
-	if options.SOCKS5 {
+	switch {
+	case options.SOCKS5:
 		fmt.Fprintf(a.stderr, "  %s %s\n", p.Muted("mode            :"), p.Cyan("socks5 (dynamic targets)"))
-	} else {
+	case options.HTTPConnect:
+		fmt.Fprintf(a.stderr, "  %s %s\n", p.Muted("mode            :"), p.Cyan("http-connect (dynamic targets)"))
+	default:
 		fmt.Fprintf(a.stderr, "  %s %s\n", p.Muted("target          :"), p.Cyan(options.Target))
 	}
 	fmt.Fprintln(a.stderr)
+	var proxyFlag string
+	switch {
+	case options.SOCKS5:
+		proxyFlag = " --socks5"
+	case options.HTTPConnect:
+		proxyFlag = " --http-connect"
+	}
 	fmt.Fprintln(a.stderr, p.Bold("Run this on the connecting machine:"))
-	fmt.Fprintf(a.stderr, "  %s %s\n",
+	fmt.Fprintf(a.stderr, "  %s %s%s\n",
 		p.Green(toolName+" connect"),
 		p.Green(formatted),
+		p.Green(proxyFlag),
 	)
 	fmt.Fprintln(a.stderr)
 	fmt.Fprintln(a.stderr, p.Muted("The tunnel will surface on the connect side at 127.0.0.1:2222 by default."))

@@ -5,6 +5,7 @@ import (
 	"log"
 	"net"
 	"sync"
+	"sync/atomic"
 
 	pion "github.com/pion/webrtc/v4"
 
@@ -31,18 +32,25 @@ func Bridge(logger *log.Logger, dc *pion.DataChannel, conn net.Conn) {
 		logger = log.Default()
 	}
 
-	var closeOnce sync.Once
+	var (
+		closeOnce sync.Once
+		bytesIn   atomic.Uint64 // DC -> TCP (data arriving from the remote peer)
+		bytesOut  atomic.Uint64 // TCP -> DC (data sent to the remote peer)
+	)
 	drain := make(chan struct{}, 1)
 	done := make(chan struct{})
 	closeAll := func(reason string, err error) {
 		closeOnce.Do(func() {
-			if err != nil && err != io.EOF {
-				logger.Print(logx.Event("tunnel", "bridge_close",
-					"stream", dc.Label(),
-					"reason", reason,
-					"err", err.Error(),
-				))
+			kv := []any{
+				"stream", dc.Label(),
+				"reason", reason,
+				"bytes_in", bytesIn.Load(),
+				"bytes_out", bytesOut.Load(),
 			}
+			if err != nil && err != io.EOF {
+				kv = append(kv, "err", err.Error())
+			}
+			logger.Print(logx.Event("tunnel", "bridge_close", kv...))
 			_ = conn.Close()
 			_ = dc.Close()
 			// done is read-only for the reader — closing it releases
@@ -59,7 +67,9 @@ func Bridge(logger *log.Logger, dc *pion.DataChannel, conn net.Conn) {
 		}
 		if _, err := conn.Write(message.Data); err != nil {
 			closeAll("tcp-write", err)
+			return
 		}
+		bytesIn.Add(uint64(len(message.Data)))
 	})
 
 	dc.OnClose(func() {
@@ -87,6 +97,7 @@ func Bridge(logger *log.Logger, dc *pion.DataChannel, conn net.Conn) {
 					closeAll("datachannel-send", sendErr)
 					return
 				}
+				bytesOut.Add(uint64(n))
 				for dc.BufferedAmount() > bufferedAmountHighThreshold {
 					select {
 					case <-drain:
