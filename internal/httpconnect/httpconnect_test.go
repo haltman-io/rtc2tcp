@@ -9,8 +9,11 @@ import (
 	"github.com/haltman-io/rtc2tcp/internal/httpconnect"
 )
 
-/* buildRequest assembles a minimal HTTP CONNECT request with the given
-method, target, and a Host header so tests don't have to format it each time. */
+/*
+	buildRequest assembles a minimal HTTP CONNECT request with the given
+
+method, target, and a Host header so tests don't have to format it each time.
+*/
 func buildRequest(method, target string) []byte {
 	return []byte(method + " " + target + " HTTP/1.1\r\nHost: " + target + "\r\n\r\n")
 }

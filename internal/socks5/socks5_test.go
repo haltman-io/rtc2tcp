@@ -33,10 +33,13 @@ func connectIPv6(ip net.IP, port uint16) []byte {
 	return append(b, byte(port>>8), byte(port))
 }
 
-/* runClient drives the client side of the handshake on a net.Pipe so
+/*
+	runClient drives the client side of the handshake on a net.Pipe so
+
 Handshake can run on the server side synchronously in the test goroutine.
 The greeting length is 2 + nMethods bytes; sending the full greeting before
-reading the server's method selection avoids a deadlock when nMethods > 1. */
+reading the server's method selection avoids a deadlock when nMethods > 1.
+*/
 func runClient(t *testing.T, client net.Conn, send []byte) {
 	t.Helper()
 	go func() {

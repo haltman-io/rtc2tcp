@@ -508,10 +508,13 @@ func (a *app) handleExposeStream(target string, dynamicMode bool, dc *pion.DataC
 	})
 }
 
-/* parseDynamicLabel extracts the target address from a dynamic-mode channel
+/*
+	parseDynamicLabel extracts the target address from a dynamic-mode channel
+
 label produced by runSOCKS5Listener or runHTTPConnectListener. Labels have
 the form "prefix-N|host:port"; the pipe separates the stream counter from
-the target so IPv6 colons in "host:port" are unambiguous. */
+the target so IPv6 colons in "host:port" are unambiguous.
+*/
 func parseDynamicLabel(label string) (string, error) {
 	idx := strings.Index(label, "|")
 	if idx < 0 || idx == len(label)-1 {
@@ -671,11 +674,14 @@ func (a *app) handleSOCKS5Connect(conn net.Conn, session *rtcwebrtc.Session, cou
 	})
 }
 
-/* runHTTPConnectListener accepts HTTP CONNECT requests on listen and opens
+/*
+	runHTTPConnectListener accepts HTTP CONNECT requests on listen and opens
+
 a new data channel per connection. The target is encoded in the channel
 label so the expose peer can dial it without an extra round-trip. Each
 accepted connection is handled in its own goroutine so a slow CONNECT
-handshake cannot stall other concurrent connections. */
+handshake cannot stall other concurrent connections.
+*/
 func (a *app) runHTTPConnectListener(ctx context.Context, listen string, session *rtcwebrtc.Session, counter *uint64) error {
 	listener, err := net.Listen("tcp", listen)
 	if err != nil {
@@ -712,10 +718,13 @@ func (a *app) runHTTPConnectListener(ctx context.Context, listen string, session
 	}
 }
 
-/* handleHTTPConnect performs the HTTP CONNECT handshake, opens a data
+/*
+	handleHTTPConnect performs the HTTP CONNECT handshake, opens a data
+
 channel to the expose peer with the target encoded in the label, and
 bridges traffic once both sides are ready. It is always run in its own
-goroutine. */
+goroutine.
+*/
 func (a *app) handleHTTPConnect(conn net.Conn, session *rtcwebrtc.Session, counter *uint64) {
 	target, err := httpconnect.Handshake(conn)
 	if err != nil {
